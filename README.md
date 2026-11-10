@@ -1,27 +1,29 @@
 # DSH App Studio
 
-DSH App Studio 是 DeepSeek Harness（DSH）的可视化 App 开发工作台。它把工程起稿、真实设备预览和 Agent 修改放进同一个工作区。用户可以直接在运行中的 App 上指出要改的位置，把跨页面的意见一次提交。新版通过验证后接管画布，用户从刚才的测试场景继续操作。
+English | [简体中文](README.zh.md)
 
-首发设计面向 Windows 上的 Android 开发，覆盖 Flutter、React Native 和 Android 原生工程。iOS 和 HarmonyOS 后续通过各自的平台适配接入。
+DSH App Studio is a visual app development workbench for DeepSeek Harness (DSH). It brings project scaffolding, live device preview, and agent-driven edits into the same workspace. Mark changes directly on a running app, collect comments across screens, and submit them together. Once the candidate passes validation, the live viewport switches to it so you can continue testing from the same scene.
 
-## 当前状态
+The first release targets Android development on Windows with Flutter, React Native, and native Android. iOS and HarmonyOS will follow through their own platform adapters.
 
-仓库目前提供产品设计、使用说明和已验证的运行时版本基线。以下使用流程面向正式插件交付后的体验。
+## Project status
 
-## 使用流程
+This repository contains the product design, usage guide, and validated runtime baseline. The workflow below describes the planned plugin experience.
 
-1. **开启所需组件。** 在 DSH 的插件管理器中启用 App Studio，以及所需的起稿、Live、评论、Agent 迭代和框架组件。Android 本地运行需要 WSL2 和可用的嵌套虚拟化。首次启用 Android 时，在 DSH 内完成专用环境配置。
-2. **打开项目。** 从左侧进入 App Studio，选择项目目录。空仓库可以拖拽组件排布页面，也可以用文字描述让 Agent 生成基础工程。已有工程选择对应框架后直接运行。已有工程通过接入调试状态接口支持自动恢复测试场景。
-3. **运行并评论。** 点击「运行」打开 Live。默认用鼠标和键盘操作 App。点击「评论模式」后可点选组件或框选区域并添加评论。返回操作模式可以去其他页面，已写的评论保留在侧栏。
-4. **提交本轮。** 选好当前项目的迭代会话后点击「提交本轮」。Agent 自动修改候选源码。候选版本构建、启动并恢复场景后，App Studio 应用改动、刷新 Live，并展示 diff 和逐条结果。验证失败时，继续在原会话里修复。
+## Usage
 
-## 会话和环境
+1. **Enable the components you need.** In DSH Plugin Manager, enable App Studio and the scaffolding, Live, commenting, agent iteration, and framework components you need. Local Android development requires WSL2 and working nested virtualization. DSH guides you through setting up the dedicated runtime when you first enable Android.
+2. **Open a project.** Open App Studio from the sidebar and choose a project directory. In an empty repository, you can arrange components on a canvas or describe the app and let the agent scaffold it. For an existing project, select its framework and run it. Existing projects integrate the debug scene interface to support automatic scene restoration.
+3. **Run and comment.** Select **Run** to open Live. Mouse and keyboard input goes to the app by default. In **Comment Mode**, select a component or drag to mark an area and add a comment. Return to interaction mode to navigate to another screen. Your comments stay in the sidebar.
+4. **Submit the iteration.** Select the project's iteration session and click **Submit Iteration**. The agent edits a candidate copy. Once the candidate builds, launches, and restores the current scene, App Studio applies the changes, updates Live, and shows the diff and the outcome of each comment. If validation fails, continue fixing the candidate in the same session.
 
-App Studio 迭代会话出现在 DSH 会话列表中，跟随项目所在的 Workspace 分组。工作台顶部的「最近会话」可以切换或新建当前项目的迭代会话，也可以打开普通 DSH 会话查看。
+## Sessions and runtime
 
-平时关闭 Live 后，专用 Android 环境按需停止，已安装工具和缓存供下次使用。要移除或重建环境，进入 **App Studio → 设置 → Android 运行环境**，选择「卸载环境」或「重新初始化环境」。设置页会显示受影响的模拟器数据。源码保存在项目目录，评论和会话由 DSH 工作区独立保存。
+App Studio iteration sessions appear in the DSH session list under the project's Workspace. Use **Recent Sessions** in App Studio to switch to an iteration session, create one for the current project, or open a regular DSH session for viewing.
 
-## 项目文档
+The dedicated Android runtime stops when its work is finished. Installed tools and caches are available on the next run. To remove or rebuild it, go to **App Studio → Settings → Android Runtime** and choose **Uninstall Runtime** or **Reinitialize Runtime**. The settings page shows which emulator data the operation will affect. Source code lives in the project directory. DSH stores comments and sessions separately from the runtime.
 
-- [架构说明](ARCHITECTURE.md)
-- [实测版本基线](runtime-lock.json)
+## Project documentation
+
+- [Architecture](ARCHITECTURE.md)
+- [Validated runtime baseline](runtime-lock.json)

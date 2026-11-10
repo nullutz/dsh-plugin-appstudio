@@ -1,41 +1,43 @@
-# DSH App Studio 架构
+# DSH App Studio Architecture
 
-App Studio 的设计目标是把运行中的 App 变成 Agent 迭代的入口。用户提供选区和意图，Agent 修改项目源码，工作台验证候选版本并恢复测试场景。首发运行 Windows 上的 Android App，覆盖 Flutter、React Native 和 Android 原生。iOS 和 HarmonyOS 通过平台会话接口扩展。
+English | [简体中文](ARCHITECTURE.zh.md)
 
-## 插件组成
+App Studio makes the running app the entry point for an agent-driven iteration. The user supplies a selection and an intent, the agent edits project source, and the workbench validates the candidate and restores the current test scene. The first release runs Android apps on Windows and covers Flutter, React Native, and native Android. iOS and HarmonyOS extend the same platform session interface.
 
-App Studio 作为一个 Cordis bundle 发布。React + TypeScript Client 通过 DSH 的左侧导航和主面板插槽挂载工作台，通过 Typert Remote 调用 TypeScript Host。一个共享 Client 展示各组件的能力状态，独立的插件条目由 DSH Plugin Manager 启停。组件依赖显式声明，例如画面评论依赖 Live，Agent 迭代依赖评论和宿主 Agent 服务。
+## Plugin components
 
-| 组件 | 职责 |
+App Studio ships as one Cordis bundle. The React and TypeScript client mounts the workbench in DSH's sidebar navigation and main panel slots. It calls the TypeScript host through Typert Remote. The shared client reflects which components are available, and DSH Plugin Manager enables or disables each plugin entry separately. Dependencies are explicit. For example, commenting requires Live, and agent iteration requires commenting and the host's agent service.
+
+| Component | Responsibility |
 |---|---|
-| 布局起稿、文字起稿 | 两个独立入口，共用工程生成请求。布局草稿表达页面层级和意图，Agent 生成目标框架的可构建源码。 |
-| Live、画面评论 | Live 默认转发键鼠给 App。评论模式支持点选组件、框选区域和跨页面收集评论。每条保存标注时的画面、设备坐标中的选区、源码基线和可用的组件定位。 |
-| Agent 迭代 | 一次提交一个批次，管理候选源码、验收、写回、Live 切换、逐条结果和 diff。 |
-| 框架适配 | Flutter、React Native 和 Android 原生各有独立条目。负责生成工程、构建、调试组件定位和场景恢复。 |
-| 平台会话 | Android 实现部署、画面、输入、截图和日志。iOS 和 HarmonyOS 后续接同一平台接口，框架适配和平台会话独立组合。 |
+| Layout and text scaffolding | Two entry points share the same project generation request. The layout draft describes the page hierarchy and intent, and the agent generates buildable source for the selected framework. |
+| Live and commenting | Live forwards mouse and keyboard input to the app. Comment Mode supports component selection, area selection, and comments across screens. Each comment records the frame at the time of annotation, the selection in device coordinates, the source baseline, and any available component location. |
+| Agent iteration | Submits comments as one batch and manages the candidate source, validation, patch application, Live handoff, per-comment outcomes, and diff. |
+| Framework adapters | Flutter, React Native, and native Android have separate entries for project generation, builds, component inspection, and scene restoration. |
+| Platform sessions | Android provides deployment, video, input, screenshots, and logs. iOS and HarmonyOS use the same platform interface. Framework adapters and platform sessions can be combined independently. |
 
-## 项目源码与会话
+## Project source and sessions
 
-生成前，结构化草稿表达布局和页面意图。生成后，Windows 项目目录是源码的权威来源，Agent 和可视化操作都以源码补丁交付改动。Linux 文件系统保存按版本同步的构建副本，允许随 Runtime 重建。组件定位由框架适配提供。定位精度有限时，评论仍可通过画面和选区表达目标。
+Before generation, a structured draft captures layout and page intent. After generation, the Windows project directory is the source of truth. Both agent edits and visual edits produce source patches. A versioned build copy lives on the Linux filesystem and can be recreated with the runtime. Framework adapters provide component locations. When a precise location is unavailable, the annotated frame and selection still give the agent a target.
 
-评论草稿由项目持有。App Studio 用项目根目录创建专用 DSH 会话，复用会话列表、Workspace 分组、置顶和归档。专用会话接收迭代任务，Agent 的写入范围限定在本轮候选副本。普通 DSH 会话通过工作台打开查看。每次提交绑定当前迭代会话 ID，此后的会话切换只影响下一轮。
+The project owns comment drafts. App Studio creates dedicated DSH sessions using the project root, so they appear in the session list and use the existing Workspace grouping, pinning, and archiving features. Dedicated sessions receive iteration tasks, with agent writes scoped to the candidate copy. Users can open regular DSH sessions for viewing. A submission keeps the session ID selected at submission time, so switching sessions affects only the next iteration.
 
-## Android 运行环境与传输
+## Android runtime and transport
 
-DSH Host 通过受管理的子进程启动专用 WSL2 发行版。首次启用时导入基础镜像，经用户确认 SDK 许可后安装锁定版本。冷启动检查嵌套虚拟化、KVM 设备及非 root 运行用户的访问权限。SDK、系统镜像、虚拟设备和缓存保存在发行版磁盘上。最后一个 Live 或构建会话结束后正常关停模拟器，再停止专用发行版。设置提供「卸载环境」和「重新初始化环境」，后者在清除专用环境后按版本锁重新配置。
+The DSH host starts a dedicated WSL2 distribution through a managed subprocess. First-time setup imports the base image and installs pinned packages after the user accepts the SDK license. Cold startup checks nested virtualization, the KVM device, and access for the non-root runtime user. The distribution disk retains the SDK, system image, virtual devices, and caches. After the last Live or build session ends, the host shuts down the emulators and stops the dedicated distribution. **Uninstall Runtime** removes the dedicated environment. **Reinitialize Runtime** removes it and provisions it again from the version lock.
 
-两台 Android 虚拟设备共用 SDK 和系统镜像，各自持有设备数据。一台承载当前 Live，一台在后台准备候选 App。**画面使用 Google Emulator 原生 RTC v2 的 WebRTC 流，输入使用受认证的 Emulator Controller gRPC。** 每台设备使用独立的发现文件、信令连接和控制目标。控制口限定本地，gRPC 保留令牌和方法允许名单。Host 负责所有权、连接和退出回收。浏览器只在候选首帧可显示且控制通道就绪时同时更新画面与输入目标。
+Two Android virtual devices share the SDK and system image, with separate device data. One serves the current Live viewport while the other prepares the candidate in the background. **Video uses the Android Emulator's native RTC v2 WebRTC stream. Input uses authenticated Emulator Controller gRPC.** Each device has its own discovery file, signaling connection, and input target. Control endpoints are local, with token authentication and a gRPC method allowlist. The host owns the connections and their cleanup. The client switches video and input together once it can display a candidate frame and the control channel is ready.
 
-Google Gateway 作为 RTC 适配的参考实现。协议存根从所锁 Emulator 随包的 proto 生成。适配层接受 Emulator 发起的 SDP offer，处理扁平 JSEP 消息，并从每台设备的私有发现文件读取认证令牌。连接就绪以实际视频解码和输入通道可用为准。重连期间保留最后一帧，并在静态场景中主动请求一次重绘。
+Google's Gateway serves as the reference for the RTC adapter. Protocol stubs come from the proto files bundled with the pinned Emulator. The adapter accepts emulator-initiated SDP offers, handles flat JSEP messages, and reads each authentication token from the device's private discovery file. A connection is ready once video has decoded and input is available. During reconnect, the viewport retains the last frame and requests a redraw when the scene is static.
 
-## 提交与场景接管
+## Submission and scene handoff
 
-1. 用户点「提交本轮」。Host 保存评论批次及源码基线，DSH Agent 在候选副本修改。当前 Live 继续运行。
-2. 构建候选，启动应用并恢复测试场景。场景接口只在调试构建可用，负责导出、恢复并验证导航、业务对象、滚动锚点和未提交输入。生成模板内置接口，已有工程通过接入接口支持无缝迭代。项目负责恢复设备绑定登录或外部连接。
-3. 在切换前核对场景版本和源码基线。测试状态变化时恢复最新检查点。外部源码编辑导致基线变化时，合并后重新验证，冲突交回用户处理。
-4. 候选通过构建、启动、场景验证及画面和输入就绪检查后，Host 应用已验证的补丁，切换 Live，并展示 diff 和逐条结果。旧设备保留到接管确认。
-5. 构建或场景恢复失败时，保留可交互的旧 Live、候选改动和日志，在原会话继续修。源码已应用而 Live 连接异常时，分别报告两者状态，并提供对同一产物的刷新重试。
+1. The user clicks **Submit Iteration**. The host records the comment batch and source baseline. The DSH agent edits the candidate copy while the current Live app keeps running.
+2. The candidate builds, launches, and restores the test scene. A debug-only interface exports, restores, and validates navigation, domain objects, scroll anchors, and unsaved input. Generated projects include the interface, and existing projects integrate it to support seamless iterations. The project provides any restoration needed for device-bound sign-ins or external connections.
+3. Before handoff, the host checks the scene version and source baseline. If the user continued testing, the candidate restores the latest checkpoint. If outside edits changed the source baseline, the host revalidates after merging and surfaces conflicts for the user.
+4. Once the candidate passes the build, launch, scene restoration, video, and input checks, the host applies the validated patch, switches Live, and shows the diff and per-comment outcomes. It retains the previous device until handoff is confirmed.
+5. If the build or scene restoration fails, the previous Live app stays interactive, and the candidate changes and logs remain available in the same session. If the source applies and Live has a connection problem, the workbench reports those outcomes separately and lets the user retry Live with the same build.
 
-## 版本基线
+## Version baseline
 
-[版本基线](runtime-lock.json)记录已验证的 DSH、WSL2、Android Emulator、系统镜像、RTC 和测试工具链组合。运行时安装校验所需版本。升级候选版本需要通过双设备画面和输入切换，以及各框架的强制重启场景恢复验收。
+The [version baseline](runtime-lock.json) records the validated combination of DSH, WSL2, Android Emulator, system image, RTC, and test toolchains. Runtime setup verifies the required versions. Upgrade candidates must pass video and input handoff between two devices, plus forced-restart scene restoration for each framework.
