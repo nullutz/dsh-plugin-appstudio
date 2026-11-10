@@ -1,0 +1,9 @@
+// Include the debug JS bundle so Android can launch after a cold restart without Metro.
+gradle.beforeProject { project ->
+    project.pluginManager.withPlugin("com.facebook.react") {
+        project.extensions.getByName("androidComponents").finalizeDsl {
+            def variants = project.extensions.getByName("react").debuggableVariants
+            variants.set(variants.get().findAll { !it.equalsIgnoreCase("debug") })
+        }
+    }
+}

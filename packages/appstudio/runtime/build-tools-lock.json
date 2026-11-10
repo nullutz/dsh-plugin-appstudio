@@ -1,0 +1,16 @@
+{
+  "flutter": {
+    "version": "3.47.8",
+    "sha256": "baf7dcc5a3dbba60fe863bf493a6cf203195621f7786eaa5a1bba02cd0d87dd2"
+  },
+  "node": {
+    "version": "24.15.0",
+    "sha256": "472655581fb851559730c48763e0c9d3bc25975c59d518003fc0849d3e4ba0f6"
+  },
+  "android": {
+    "platforms": ["36", "37.0"],
+    "buildTools": ["36.0.0", "37.0.0"],
+    "ndk": "28.2.13676358",
+    "cmake": "3.22.1"
+  }
+}

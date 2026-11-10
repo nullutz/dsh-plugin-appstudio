@@ -1,0 +1,4 @@
+packages:
+  - packages/appstudio
+allowBuilds:
+  esbuild: true

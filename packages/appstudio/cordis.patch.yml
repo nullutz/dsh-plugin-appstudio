@@ -1,0 +1,21 @@
+- insert:
+  - id: appstudio
+    name: dsh-plugin-appstudio
+  - id: appstudio-android
+    name: dsh-plugin-appstudio/android
+  - id: appstudio-flutter
+    name: dsh-plugin-appstudio/flutter
+  - id: appstudio-react-native
+    name: dsh-plugin-appstudio/react-native
+  - id: appstudio-native-android
+    name: dsh-plugin-appstudio/native-android
+  - id: appstudio-commenting
+    name: dsh-plugin-appstudio/commenting
+  - id: appstudio-agent
+    name: dsh-plugin-appstudio/agent
+  - id: appstudio-iterations
+    name: dsh-plugin-appstudio/iterations
+  - id: appstudio-layout
+    name: dsh-plugin-appstudio/layout
+  - id: appstudio-prompt
+    name: dsh-plugin-appstudio/prompt

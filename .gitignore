@@ -1,2 +1,6 @@
 /.process/
 /.validation/
+node_modules/
+/packages/appstudio/lib/
+/packages/.typert-protocol/
+__pycache__/

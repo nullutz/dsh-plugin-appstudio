@@ -1,0 +1,21 @@
+{
+  "name": "dsh-plugin-appstudio-workspace",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.5.1",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "check": "pnpm generate && tsc -p packages/appstudio/tsconfig.host.json && tsc -p packages/appstudio/tsconfig.client.json",
+    "build": "pnpm check && node scripts/build.mjs",
+    "test": "node --experimental-transform-types --disable-warning=ExperimentalWarning --test packages/appstudio/tests/*.test.ts"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/dsh-brand": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-typert-generator": "0.2.2-rc.1",
+    "esbuild": "0.28.1",
+    "typescript": "6.0.3",
+    "zod": "4.4.3"
+  }
+}

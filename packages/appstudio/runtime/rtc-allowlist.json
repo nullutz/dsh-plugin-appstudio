@@ -1,0 +1,17 @@
+{
+  "unprotected": [],
+  "allowlist": [
+    {
+      "iss": "android-studio",
+      "allowed": [
+        "/android\\.emulation\\.control\\.EmulatorController/getStatus",
+        "/android\\.emulation\\.control\\.EmulatorController/setVmState",
+        "/android\\.emulation\\.control\\.EmulatorController/sendTouch",
+        "/android\\.emulation\\.control\\.EmulatorController/sendKey",
+        "/android\\.emulation\\.control\\.v2\\.Rtc/RequestRtcStream",
+        "/android\\.emulation\\.control\\.v2\\.Rtc/ReceiveJsepMessageStream",
+        "/android\\.emulation\\.control\\.v2\\.Rtc/SendJsepMessage"
+      ]
+    }
+  ]
+}

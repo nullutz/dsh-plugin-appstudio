@@ -1,0 +1,16 @@
+name: appstudio_starter
+description: An Android app created with DSH App Studio.
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.13.7
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/

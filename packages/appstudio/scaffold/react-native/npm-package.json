@@ -1,0 +1,22 @@
+{
+  "name": "appstudio-starter",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {"android": "react-native run-android", "start": "react-native start"},
+  "dependencies": {
+    "react": "19.3.0",
+    "react-native": "0.88.1",
+    "react-native-safe-area-context": "5.11.1"
+  },
+  "devDependencies": {
+    "@babel/core": "7.29.13",
+    "@babel/runtime": "7.29.13",
+    "@react-native-community/cli": "20.2.0",
+    "@react-native-community/cli-platform-android": "20.2.0",
+    "@react-native/babel-preset": "0.88.1",
+    "@react-native/metro-config": "0.88.1",
+    "@types/react": "19.3.0",
+    "typescript": "6.0.3"
+  },
+  "engines": {"node": ">=22.11.0"}
+}

@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM"],
+    "paths": { "@deepseek-ai/dsh-typert-protocol": ["./packages/.typert-protocol/index.d.ts"] }
+  },
+  "files": [],
+  "references": [
+    { "path": "./packages/appstudio/tsconfig.typert.json" },
+    { "path": "./packages/.typert-protocol/tsconfig.json" }
+  ]
+}

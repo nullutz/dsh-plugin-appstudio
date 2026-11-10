@@ -1,0 +1,8 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"], "types": ["react"], "jsx": "react-jsx",
+    "paths": { "dsh-plugin-appstudio/protocol": ["./src/shared/protocol.ts"] }
+  },
+  "include": ["src/client/**/*", "src/shared/**/*.ts"]
+}
