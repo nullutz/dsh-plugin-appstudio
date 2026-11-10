@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "kind": "appstudio-validated-baseline",
+  "validatedOn": "2026-11-10",
+  "host": {
+    "os": "Windows",
+    "osBuild": "26200.8875",
+    "architecture": "x86_64",
+    "dshDesktop": "0.2.2-rc.1",
+    "dshSourceReviewed": "fcc0ad462172522aaf5c93a7b2e01f6b9f0b0159",
+    "electron": "44.7.0",
+    "chromium": "152.0.7977.130"
+  },
+  "wsl": {
+    "version": "2.7.11.0",
+    "kernel": "6.18.33.2-microsoft-standard-WSL2",
+    "networkMode": "nat",
+    "rootfs": "ubuntu-base-24.04.5-base-amd64.tar.gz",
+    "rootfsSha256": "e77b6f10c2590cef872b33ee9f635a0e3fd1f57fb074c0e52b5c7f56147a0c86",
+    "python": "3.12.3"
+  },
+  "android": {
+    "commandLineToolsBuild": "15859902",
+    "commandLineToolsLinuxSha256": "4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583",
+    "emulator": {
+      "version": "37.2.13",
+      "buildId": "16740729",
+      "rendering": "swiftshader",
+      "displayWidth": 720,
+      "displayHeight": 1280
+    },
+    "platformTools": {
+      "version": "37.0.1",
+      "buildId": "15733141"
+    },
+    "systemImage": {
+      "sdkPackage": "system-images;android-36;google_apis;x86_64",
+      "revision": 7,
+      "extensionLevel": 17,
+      "buildFingerprint": "google/sdk_gphone64_x86_64/emu64xa:16/BE2A.250530.026.F3/13894323:userdebug/dev-keys"
+    }
+  },
+  "rtc": {
+    "gatewaySource": "https://github.com/google/android-emulator-container-scripts",
+    "gatewayCommit": "0aa7b0dc0556a8fa1827bf5c8a2f2a04e5301fb6",
+    "gatewayPackage": "0.1.0",
+    "aiohttp": "3.14.5",
+    "grpcio": "1.85.1",
+    "protobuf": "7.36.2",
+    "websockets": "17.4",
+    "videoCodec": "VP8",
+    "videoTransport": "WebRTC/UDP",
+    "inputTransport": "Emulator Controller gRPC"
+  },
+  "testApkBuilds": {
+    "host": "Windows",
+    "node": "24.15.0",
+    "jdk": "21.0.12.1",
+    "flutter": {
+      "framework": "3.47.8",
+      "dart": "3.13.7",
+      "gradle": "9.3.1",
+      "agp": "9.1.0",
+      "compileSdk": 36
+    },
+    "reactNative": {
+      "framework": "0.88.1",
+      "react": "19.3.0",
+      "gradle": "9.4.1",
+      "agp": "9.2.1",
+      "compileSdk": 37,
+      "buildTools": "37.0.0",
+      "ndk": "28.2.13676358"
+    },
+    "androidViews": {
+      "compileSdk": 36,
+      "buildTools": "36.0.0"
+    }
+  }
+}
