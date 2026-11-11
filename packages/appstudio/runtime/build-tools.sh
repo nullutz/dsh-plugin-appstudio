@@ -17,7 +17,13 @@ case "$2" in
   *) echo 'Unknown Android framework.' >&2; exit 1 ;;
 esac
 
-install -d -m 0755 "$tools"
+runtime_error() {
+  printf '%s\nAPPSTUDIO_RUNTIME_ERROR %s\n' "$2" "$1" >&2
+  exit 1
+}
+
+install -d -m 0755 "$tools" ||
+  runtime_error runtime-storage 'Could not create the Android build-tool directory. Check free space and write access in WSL.'
 exec 9>"$tools/install.lock"
 flock -x 9
 install -d -m 0700 -o appstudio -g appstudio "$tools/cache"
@@ -32,8 +38,10 @@ if [[ "$framework" == flutter ]] &&
 fi
 if (( ${#packages[@]} )); then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y -qq --no-install-recommends "${packages[@]}"
+  if ! apt-get -o APT::Update::Error-Mode=any update -qq >/dev/null 2>&1 ||
+      ! apt-get install -y -qq --no-install-recommends "${packages[@]}" >/dev/null 2>&1; then
+    runtime_error build-dependencies 'Could not install the Linux build tools. Check Ubuntu package access and free space from WSL, then retry the build.'
+  fi
 fi
 export JAVA_HOME=$java ANDROID_HOME=$sdk ANDROID_SDK_ROOT=$sdk
 export PATH="$JAVA_HOME/bin:$PATH"
@@ -52,8 +60,7 @@ with open(sys.argv[1], encoding='utf-8') as source:
 PY
 )
 if [[ "${#pins[@]}" != 10 ]]; then
-  echo 'App Studio Android build toolchain pins are incomplete.' >&2
-  exit 1
+  runtime_error build-dependencies 'App Studio Android build toolchain pins are incomplete. Refresh the plugin installation.'
 fi
 
 missing=()
@@ -73,12 +80,12 @@ if [[ "$framework" == react-native ]]; then
   need "$sdk/cmake/${pins[9]}/bin/cmake" "cmake;${pins[9]}"
 fi
 if (( ${#missing[@]} )); then
-  "$sdk/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$sdk" --install "${missing[@]}"
+  "$sdk/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$sdk" --install "${missing[@]}" >/dev/null 2>&1 ||
+    runtime_error build-dependencies 'Could not install the pinned Android build packages. Check dl.google.com access and free space in WSL, then retry the build.'
 fi
 for file in "${required_files[@]}"; do
   if [[ ! -r "$file" ]]; then
-    echo "Required Android build tool file is missing: $file" >&2
-    exit 1
+    runtime_error build-dependencies "An expected Android build tool is missing (${file##*/}). Retry installation of the runtime build tools."
   fi
 done
 
@@ -88,21 +95,27 @@ install_tool() (
   if [[ -x "$target/bin/$name" && -f "$target/.appstudio-archive" && "$(cat "$target/.appstudio-archive")" == "$checksum" ]]; then
     return
   fi
-  local staging
-  staging=$(mktemp -d "$tools/.stage.XXXXXXXX") || exit 1
+  local staging status
+  staging=$(mktemp -d "$tools/.stage.XXXXXXXX") ||
+    runtime_error runtime-storage "Could not stage the pinned $name tool. Check WSL storage."
   trap 'rm -rf -- "$staging"' EXIT
-  curl --fail --silent --show-error --location --proto '=https' --retry 3 --connect-timeout 30 \
-    --output "$staging/archive.tar.xz" "$url" || exit 1
+  curl --fail --silent --location --proto '=https' --retry 3 --connect-timeout 30 \
+    --output "$staging/archive.tar.xz" "$url" || {
+      status=$?
+      if [[ "$status" == 23 ]]; then
+        runtime_error runtime-storage "Could not write the downloaded $name archive. Check WSL free space."
+      fi
+      runtime_error build-dependencies "Could not download the pinned $name tool (curl exit $status). Check HTTPS access from WSL, then retry the build."
+    }
   if ! printf '%s  %s\n' "$checksum" "$staging/archive.tar.xz" | sha256sum --check --status; then
-    echo "The $name tool archive failed its SHA-256 check." >&2
-    exit 1
+    runtime_error build-dependencies "The $name tool archive failed its SHA-256 check. Retry the build over a trusted connection."
   fi
   install -d "$staging/tool" || exit 1
   tar --extract --xz --file "$staging/archive.tar.xz" --directory "$staging/tool" --strip-components=1 \
-    --no-same-owner --no-same-permissions || exit 1
+    --no-same-owner --no-same-permissions ||
+      runtime_error runtime-storage "Could not unpack the verified $name tool. Check WSL free space."
   if [[ ! -x "$staging/tool/bin/$name" ]]; then
-    echo "The $name tool archive lacks its executable." >&2
-    exit 1
+    runtime_error build-dependencies "The verified $name tool archive lacks its executable."
   fi
   printf '%s\n' "$checksum" > "$staging/tool/.appstudio-archive" || exit 1
   if [[ "$name" == flutter ]]; then

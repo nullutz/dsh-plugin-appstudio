@@ -14,6 +14,9 @@ export interface CandidateLease {
 const fileLimit = 512 * 1024
 const renderedLimit = 48 * 1024
 const ignored = new Set(['.git', '.hg', '.svn', 'node_modules', '.gradle', '.dart_tool'])
+const credentialNames = new Set(['.ssh', '.aws', '.azure', '.gnupg', '.kube', '.npmrc', '.netrc',
+  '.pypirc', '.credentials.yaml', '.credentials.yml', 'key.properties'])
+const dotenvTemplate = /^\.env\.(?:example|sample|template)$/u
 const reservedWindowsName = /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i
 export const candidateToolNames: ReadonlySet<string> = new Set([
   'appstudio_list_files', 'appstudio_read_file', 'appstudio_edit_file', 'appstudio_write_file', 'appstudio_delete_file',
@@ -24,6 +27,12 @@ function within(parent: string, path: string): boolean {
   return child !== '..' && !child.startsWith('..' + sep) && !isAbsolute(child)
 }
 
+function localCredential(name: string): boolean {
+  const key = name.toLowerCase()
+  return credentialNames.has(key) || (key === '.env' || key.startsWith('.env.') && !dotenvTemplate.test(key)) ||
+    /\.(?:key|jks|keystore|p12|pfx)$/u.test(key)
+}
+
 function pathParts(path: string): string[] {
   const parts = path.split('/')
   if (path.length > 1024 || parts.some(part => !part || part === '.' || part === '..' ||
@@ -31,6 +40,7 @@ function pathParts(path: string): string[] {
       reservedWindowsName.test(part) || ignored.has(part.toLowerCase()))) {
     throw new Error('Use a normal, project-relative candidate path with forward slashes.')
   }
+  if (parts.some(localCredential)) throw new Error('Local credential files are outside the App Studio candidate tool scope.')
   return parts
 }
 
@@ -120,7 +130,7 @@ export class CandidateFiles {
     const root = await this.root(signal)
     const folder = await this.target(root.path, path === '' ? [] : pathParts(path), 'directory', signal)
     const entries = (await readdir(folder, { withFileTypes: true }))
-      .filter(entry => !ignored.has(entry.name.toLowerCase()) && (entry.isDirectory() || entry.isFile()))
+      .filter(entry => !ignored.has(entry.name.toLowerCase()) && !localCredential(entry.name) && (entry.isDirectory() || entry.isFile()))
       .sort((left, right) => left.name.localeCompare(right.name))
     const visible = entries.slice(0, 200).map(entry => entry.name + (entry.isDirectory() ? '/' : ''))
     if (entries.length > visible.length) visible.push(`… ${entries.length - visible.length} more entries`)

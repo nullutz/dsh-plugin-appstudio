@@ -35,6 +35,7 @@ export function openPeer(
   retained: HTMLCanvasElement,
   onState: (state: PeerState) => void,
   onInputError: (detail: string) => void,
+  shouldAnnounceReadiness: () => boolean,
 ): DevicePeer {
   const controller = new AbortController()
   const connection = new RTCPeerConnection({ iceServers: [] })
@@ -78,6 +79,12 @@ export function openPeer(
 
   function checkReady(): void {
     if (ready || !decoded || !inputReady || connection.connectionState !== 'connected') return
+    try {
+      if (shouldAnnounceReadiness()) send({ appStudioPreviewReady: true })
+    } catch (error) {
+      fail(error)
+      return
+    }
     ready = true
     window.clearTimeout(timeout)
     onState({ phase: 'ready' })

@@ -14,6 +14,7 @@ const browserSignal = z.union([
     usernameFragment: z.string().max(256).nullish(),
   }),
   z.strictObject({ bye: z.literal(true) }),
+  z.strictObject({ appStudioPreviewReady: z.literal(true) }),
   z.strictObject({ appStudioInput: z.discriminatedUnion('kind', [
     z.strictObject({ kind: z.literal('touch'), x: z.int().min(0), y: z.int().min(0), pressure: z.union([z.literal(0), z.literal(1)]) }),
     z.strictObject({ kind: z.literal('key'), key: z.string().min(1).max(64), action: z.union([z.literal(0), z.literal(1), z.literal(2)]) }),

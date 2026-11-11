@@ -9,17 +9,20 @@ type RunAction = 'run' | 'rebuild'
 type ProjectStream = RemoteStreamHandle<ProjectRunEvent, never>
 
 export interface ProjectRemote {
-  projectStatus(): Promise<RemoteResult<ProjectView>>
+  projectStatus(projectRoot: string): Promise<RemoteResult<ProjectView>>
   runProject(config: ProjectRunConfig, signal?: AbortSignal): ProjectStream
   rebuildProject(config: ProjectRunConfig, signal?: AbortSignal): ProjectStream
 }
 
 const maxOutput = 48_000
+const reconnectWindow = 20_000
+const reconnectInterval = 2_000
 const emptyDraft: ProjectRunConfig = { projectRoot: '', framework: 'flutter' }
 
-export function useProjectRun(remote: ProjectRemote, enabled: boolean, runtimeRunning: boolean) {
+export function useProjectRun(remote: ProjectRemote, enabled: boolean, runtimeRunning: boolean, suggestedRoot: string, resumeExpected: boolean) {
   const [draft, setDraft] = useState<ProjectRunConfig>(emptyDraft)
   const [project, setProject] = useState<ProjectView>()
+  const [runtimeResolved, setRuntimeResolved] = useState(false)
   const [pending, setPending] = useState<RunAction>()
   const [progress, setProgress] = useState('')
   const [output, setOutput] = useState('')
@@ -30,6 +33,8 @@ export function useProjectRun(remote: ProjectRemote, enabled: boolean, runtimeRu
   const [canceled, setCanceled] = useState(false)
   const [statusAttempt, setStatusAttempt] = useState(0)
   const operation = useRef<AbortController | null>(null)
+  const statusRevision = useRef(0)
+  const lookupRoot = runtimeRunning ? draft.projectRoot.trim() || suggestedRoot.trim() : ''
 
   useEffect(() => () => {
     operation.current?.abort()
@@ -37,6 +42,7 @@ export function useProjectRun(remote: ProjectRemote, enabled: boolean, runtimeRu
   }, [remote])
 
   useEffect(() => {
+    if (!runtimeRunning) setRuntimeResolved(false)
     if (!enabled) {
       operation.current?.abort()
       setProject(undefined)
@@ -46,37 +52,67 @@ export function useProjectRun(remote: ProjectRemote, enabled: boolean, runtimeRu
     }
     if (pending) return
     let closed = false
+    let timer: number | undefined
+    const reconnectUntil = Date.now() + reconnectWindow
+    function retry(): boolean {
+      if (!runtimeRunning || Date.now() + reconnectInterval > reconnectUntil) return false
+      timer = window.setTimeout(() => void read(), reconnectInterval)
+      return true
+    }
     async function read(): Promise<void> {
+      const revision = statusRevision.current
+      const obsolete = () => closed || operation.current || revision !== statusRevision.current
       try {
-        const result = await remote.projectStatus()
-        if (closed || operation.current) return
+        const result = await remote.projectStatus(lookupRoot)
+        if (obsolete()) return
         if (!result.ok) throw new Error(result.error.message)
         const view = result.value
-        setProject(view)
+        setProject(previous => runtimeRunning && previous?.framework && !view.framework ? previous : view)
         setStatusError('')
         const framework = view.framework
         if (framework && view.projectRoot) {
+          if (runtimeRunning) setRuntimeResolved(true)
           setDraft(previous => previous.projectRoot ? previous : { projectRoot: view.projectRoot, framework })
+        } else {
+          const retrying = retry()
+          if (runtimeRunning && (!resumeExpected || !retrying)) setRuntimeResolved(true)
         }
       } catch (cause) {
-        if (!closed && !operation.current) setStatusError(cause instanceof Error ? cause.message : String(cause))
+        if (!obsolete()) {
+          setStatusError(cause instanceof Error ? cause.message : String(cause))
+          retry()
+        }
       } finally {
-        if (!closed && !operation.current) setStatusRefreshing(false)
+        if (!obsolete()) setStatusRefreshing(false)
       }
     }
-    void read()
-    return () => { closed = true }
-  }, [remote, enabled, runtimeRunning, pending, statusAttempt])
+    if (lookupRoot) timer = window.setTimeout(() => void read(), 250)
+    else void read()
+    return () => {
+      closed = true
+      window.clearTimeout(timer)
+    }
+  }, [remote, enabled, runtimeRunning, resumeExpected, pending, statusAttempt, lookupRoot])
 
   const refresh = useCallback(() => {
+    statusRevision.current++
     setStatusRefreshing(true)
     setStatusAttempt(value => value + 1)
+  }, [])
+
+  const acceptDeployment = useCallback((view: ProjectView) => {
+    statusRevision.current++
+    setProject(view)
+    setRuntimeResolved(true)
+    setStatusError('')
+    setStatusRefreshing(false)
   }, [])
 
   async function run(action: RunAction, config: ProjectRunConfig): Promise<void> {
     if (operation.current) return
     const controller = new AbortController()
     operation.current = controller
+    statusRevision.current++
     let stream: ProjectStream | undefined
     let finished = false
     setPending(action)
@@ -98,7 +134,7 @@ export function useProjectRun(remote: ProjectRemote, enabled: boolean, runtimeRu
           setError(event.text)
           finished = true
         } else if (event.kind === 'ready') {
-          setProject(event.project)
+          acceptDeployment(event.project)
           const framework = event.project.framework
           if (action === 'run' && framework) {
             setDraft({ projectRoot: event.project.projectRoot, framework })
@@ -120,9 +156,9 @@ export function useProjectRun(remote: ProjectRemote, enabled: boolean, runtimeRu
   }
 
   return {
-    draft, setDraft, project, pending, progress, output, error, statusError, statusRefreshing, interrupted, canceled, run,
+    draft, setDraft, project, runtimeResolved, pending, progress, output, error, statusError, statusRefreshing, interrupted, canceled, run,
     cancel: () => operation.current?.abort(),
-    refresh,
+    refresh, acceptDeployment,
   }
 }
 
@@ -240,12 +276,15 @@ export function ProjectControls({
         </fieldset>
       </form>
       {pending && <div><button type="button" onClick={state.cancel}>{t('projectCancel')}</button></div>}
-      {runningFramework && project && (
-        <p className="appstudio-project-current" data-appstudio-project-current="">
-          {t('projectCurrent')} {project.projectRoot} · {project.applicationId} · {project.versionCode}
-          {project.restored && <> · {t('projectSceneRestored')}</>}
-          {!!frameworks?.length && !canRebuild && <> · {t('projectCurrentFrameworkDisabled')}</>}
-        </p>
+      {!starter && runningFramework && project && (
+        <details className="appstudio-project-current" data-appstudio-project-current="">
+          <summary>
+            {t('projectCurrent')}{project.restored && <> · {t('projectSceneRestored')}</>}
+          </summary>
+          <p>{project.projectRoot}</p>
+          <p>{project.applicationId} · {project.versionCode}</p>
+          {!!frameworks?.length && !canRebuild && <p>{t('projectCurrentFrameworkDisabled')}</p>}
+        </details>
       )}
       {state.canceled && <p role="status">{t('projectCanceled')}</p>}
       {runError && <p role="alert">{runError}</p>}

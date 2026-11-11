@@ -46,18 +46,39 @@ def encode_scene(scene):
     return encoded
 
 
-def checkpoint_from_hook(raw, pid):
+def preserves_scene(source, restored):
+    """Allow additional object fields while preserving all existing scene data."""
+    values = [(source, restored)]
+    while values:
+        previous, current = values.pop()
+        if type(previous) is not type(current):
+            return False
+        if isinstance(previous, dict):
+            if not previous.keys() <= current.keys():
+                return False
+            values.extend((value, current[key]) for key, value in previous.items())
+        elif isinstance(previous, list):
+            if len(previous) != len(current):
+                return False
+            values.extend(zip(previous, current))
+        elif previous != current:
+            return False
+    return True
+
+
+def checkpoint_from_hook(raw, pid=None):
     try:
         exported = json.loads(raw)
     except (UnicodeError, ValueError, RecursionError) as error:
         raise SceneError('The app published an invalid debug scene checkpoint.') from error
-    if (not isinstance(exported, dict) or not valid_pid(exported.get('pid')) or exported['pid'] != pid or
+    if (not isinstance(exported, dict) or not valid_pid(exported.get('pid')) or
+            (pid is not None and exported['pid'] != pid) or
             type(exported.get('nativeVersion')) not in (int, str) or not valid_version(str(exported['nativeVersion']))):
         raise SceneError('The app has not published a checkpoint for its current process.')
     version = str(exported.pop('nativeVersion'))
-    exported.pop('pid')
+    saved_pid = exported.pop('pid')
     encode_scene(exported)
-    return {'pid': pid, 'versionCode': version, 'scene': exported}
+    return {'pid': saved_pid, 'versionCode': version, 'scene': exported}
 
 
 def checkpoint_for_resume(checkpoint):
@@ -171,13 +192,16 @@ class AndroidScene:
             raise SceneError('ADB could not determine the current Android app process.')
         return int(value)
 
-    async def capture_for_pid(self, serial, application, pid):
+    async def read_checkpoint(self, serial, application, pid=None):
         code, raw = await self.shell(serial, 'run-as', application, 'cat', SCENE_FILE, timeout=5)
         if code != 0:
             raise SceneError('The app has not published an App Studio debug scene checkpoint.')
         if len(raw) > SCENE_LIMIT:
             raise SceneError('The app debug scene checkpoint exceeds 256 KiB.')
-        checkpoint = checkpoint_from_hook(raw, pid)
+        return checkpoint_from_hook(raw, pid)
+
+    async def capture_for_pid(self, serial, application, pid):
+        checkpoint = await self.read_checkpoint(serial, application, pid)
         if await self.app_pid(serial, application) != pid:
             raise SceneError('The Android app restarted while its scene was being captured.')
         return checkpoint
@@ -189,7 +213,9 @@ class AndroidScene:
             raise SceneError('Start the Android app before capturing its scene.')
         return await self.capture_for_pid(serial, application, pid)
 
-    async def wait_for_checkpoint(self, serial, application, previous_pid, expected_version, expected_scene):
+    async def wait_for_checkpoint(self, serial, application, previous_pid, expected_version, expected_scene,
+                                  *, allow_additions=False):
+        exact = encode_scene(expected_scene) if expected_scene is not None and not allow_additions else None
         deadline = asyncio.get_running_loop().time() + 50
         failure = SceneError('The installed Android app did not start a fresh process.')
         while asyncio.get_running_loop().time() < deadline:
@@ -199,9 +225,11 @@ class AndroidScene:
                     checkpoint = await self.capture_for_pid(serial, application, pid)
                     if checkpoint['versionCode'] != expected_version:
                         raise SceneError('The running Android app version does not match the built APK.')
-                    if expected_scene is not None and encode_scene(checkpoint['scene']) != expected_scene:
-                        raise SceneError('The app did not restore the captured scene in its new process.')
                     if expected_scene is not None:
+                        scene = checkpoint['scene']
+                        restored = preserves_scene(expected_scene, scene) if allow_additions else encode_scene(scene) == exact
+                        if not restored:
+                            raise SceneError('The app did not restore the captured scene in its new process.')
                         await self.checked_shell(serial, 'The app did not consume the resume checkpoint.',
                                                  'run-as', application, 'test', '!', '-e', RESUME_FILE, timeout=5)
                     return checkpoint
@@ -210,9 +238,77 @@ class AndroidScene:
             await asyncio.sleep(0.4)
         raise failure
 
+    async def verify_installed_version(self, serial, application, version):
+        package_info = await self.checked_shell(serial, 'Could not verify the installed Android package.',
+                                                'dumpsys', 'package', application)
+        installed = re.search(rb'^\s+versionCode=([0-9]+)\b', package_info, re.MULTILINE)
+        if not installed or installed[1].decode('ascii') != version:
+            raise SceneError('The installed Android package does not match the expected version.')
+
+    async def stage_resume(self, serial, application, payload):
+        await self.checked_shell(serial, 'Could not write the source scene into the debug app.',
+                                 'run-as', application, 'sh', '-c', 'cat > "$1"', 'appstudio', RESUME_STAGING,
+                                 payload=payload)
+        await self.checked_shell(serial, 'Could not commit the source scene for the new app process.',
+                                 'run-as', application, 'mv', '-f', RESUME_STAGING, RESUME_FILE)
+
+    async def clear_resume(self, serial, application):
+        with contextlib.suppress(SceneError):
+            await self.shell(serial, 'run-as', application, 'rm', '-f', RESUME_FILE, RESUME_STAGING, timeout=5)
+
+    async def is_foreground(self, serial, application):
+        activities = await self.checked_shell(serial, 'Could not verify the foreground Android activity.',
+                                              'dumpsys', 'activity', 'activities', timeout=5)
+        return bool(re.search(rb'^\s*topResumedActivity=ActivityRecord\{[^\r\n]*\su\d+\s+' +
+                              re.escape(application.encode('ascii')) + rb'/', activities, re.MULTILINE))
+
+    async def launcher_component(self, serial, application):
+        result = await self.checked_shell(serial, 'Could not resolve the installed Android launcher activity.',
+                                          'cmd', 'package', 'resolve-activity', '--brief', '-a', 'android.intent.action.MAIN',
+                                          '-c', 'android.intent.category.LAUNCHER', '-p', application, timeout=5)
+        for line in result.decode('ascii', errors='replace').splitlines():
+            package, separator, activity = line.strip().partition('/')
+            if separator and package == application and ACTIVITY.fullmatch(activity):
+                return line.strip()
+        raise SceneError('The installed Android app has no matching launcher activity.')
+
+    async def resume(self, application, version):
+        serial = await self.device_serial()
+        await self.verify_installed_version(serial, application, version)
+        pid = await self.app_pid(serial, application)
+        if pid is not None and await self.is_foreground(serial, application):
+            checkpoint = await self.capture_for_pid(serial, application, pid)
+            if checkpoint['versionCode'] != version:
+                raise SceneError('The running Android app version does not match the expected version.')
+            return checkpoint
+
+        component = await self.launcher_component(serial, application)
+        saved = None
+        if pid is None:
+            with contextlib.suppress(SceneError):
+                checkpoint = await self.read_checkpoint(serial, application)
+                if checkpoint['versionCode'] == version:
+                    saved = checkpoint
+        try:
+            if saved is not None:
+                await self.stage_resume(serial, application, checkpoint_for_resume(saved))
+            launch = await self.checked_shell(serial, 'Could not open the installed Android app.',
+                                              'am', 'start', '-W', '-a', 'android.intent.action.MAIN',
+                                              '-c', 'android.intent.category.LAUNCHER', '-n', component, timeout=30)
+            if not re.search(rb'^Status:\s+ok\s*$', launch, re.MULTILINE):
+                raise SceneError('Android did not open the installed debug activity.')
+            expected_scene = saved['scene'] if saved is not None else None
+            checkpoint = await self.wait_for_checkpoint(serial, application, None, version, expected_scene)
+            if not await self.is_foreground(serial, application):
+                raise SceneError('The installed Android app did not reach the foreground.')
+            return checkpoint
+        finally:
+            if saved is not None:
+                await self.clear_resume(serial, application)
+
     async def deploy(self, application, activity, version, apk, source):
         resume_payload = checkpoint_for_resume(source) if source is not None else None
-        expected_scene = encode_scene(source['scene']) if source is not None else None
+        expected_scene = source['scene'] if source is not None else None
         serial = await self.device_serial()
         previous_pid = await self.app_pid(serial, application)
         await self.checked_shell(serial, 'Could not stop the previous Android app process.', 'am', 'force-stop', application)
@@ -221,33 +317,25 @@ class AndroidScene:
             diagnostic = next((line.strip() for line in output.decode('utf-8', errors='replace').splitlines()
                                if 'INSTALL_FAILED_' in line), '')
             raise SceneError('ADB could not install the debug APK.' + (' ' + diagnostic[:240] if diagnostic else ''))
-        package_info = await self.checked_shell(serial, 'Could not verify the installed Android package.',
-                                                'dumpsys', 'package', application)
-        installed = re.search(rb'^\s+versionCode=([0-9]+)\b', package_info, re.MULTILINE)
-        if not installed or installed[1].decode('ascii') != version:
-            raise SceneError('The installed package version does not match the built APK.')
+        await self.verify_installed_version(serial, application, version)
         await self.checked_shell(serial, 'The installed app must be debuggable to access its scene.',
                                  'run-as', application, 'mkdir', '-p', 'files')
         await self.checked_shell(serial, 'Could not clear stale scene transfer files.',
                                  'run-as', application, 'rm', '-f', RESUME_FILE, RESUME_STAGING)
         try:
             if resume_payload is not None:
-                await self.checked_shell(serial, 'Could not write the source scene into the debug app.',
-                                         'run-as', application, 'sh', '-c', 'cat > "$1"', 'appstudio', RESUME_STAGING,
-                                         payload=resume_payload)
-                await self.checked_shell(serial, 'Could not commit the source scene for the new app process.',
-                                         'run-as', application, 'mv', '-f', RESUME_STAGING, RESUME_FILE)
+                await self.stage_resume(serial, application, resume_payload)
             launch = await self.checked_shell(serial, 'Could not launch the installed debug activity.',
                                               'am', 'start', '-W', '-n', f'{application}/{activity}', timeout=60)
             if not re.search(rb'^Status:\s+ok\s*$', launch, re.MULTILINE):
                 raise SceneError('Android did not start the installed debug activity.')
-            checkpoint = await self.wait_for_checkpoint(serial, application, previous_pid, version, expected_scene)
+            checkpoint = await self.wait_for_checkpoint(serial, application, previous_pid, version, expected_scene,
+                                                        allow_additions=True)
             return {'pid': checkpoint['pid'], 'previousPid': previous_pid, 'sceneRestored': source is not None,
                     'checkpoint': checkpoint}
         finally:
             if resume_payload is not None:
-                with contextlib.suppress(SceneError):
-                    await self.shell(serial, 'run-as', application, 'rm', '-f', RESUME_FILE, RESUME_STAGING, timeout=5)
+                await self.clear_resume(serial, application)
 
 
 def parse_scene_request(raw, operation):
@@ -262,6 +350,10 @@ def parse_scene_request(raw, operation):
         if set(payload) != {'applicationId'}:
             raise SceneError('Invalid capture request fields.', 400)
         return (application,)
+    if operation == 'resume':
+        if set(payload) != {'applicationId', 'versionCode'} or not valid_version(payload['versionCode']):
+            raise SceneError('Invalid resume request fields.', 400)
+        return application, payload['versionCode']
     if set(payload) - {'applicationId', 'activity', 'versionCode', 'apkPath', 'checkpoint'}:
         raise SceneError('Invalid deploy request fields.', 400)
     activity = payload.get('activity')

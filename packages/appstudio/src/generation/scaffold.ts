@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { FrameworkId, StarterLayout } from '../shared/protocol.ts'
+import type { FrameworkId, StarterBlock, StarterLayout } from '../shared/protocol.ts'
+import { starterBlockPosition, starterColumns, validStarterBlockPositions } from '../shared/starter-layout.ts'
 
 export interface ScaffoldRequest {
   framework: FrameworkId
@@ -53,6 +54,36 @@ function defaultLayout(title: string): StarterLayout {
       { id: 'items', kind: 'list', text: Array.from({ length: 24 }, (_, index) => `Item ${index + 1}`).join('\n') },
     ] },
   ] }
+}
+
+interface ScaffoldCell {
+  span: number
+  block?: Pick<StarterBlock, 'id' | 'kind' | 'text'>
+}
+
+function scaffoldScreen({ id, title, blocks }: StarterLayout['screens'][number]) {
+  if (!validStarterBlockPositions(blocks)) throw new Error('Layout blocks must fit inside the screen grid without overlapping.')
+  const ordered = blocks.map((block, index) => ({ block, ...starterBlockPosition(block, index) }))
+    .sort((left, right) => left.row - right.row || left.column - right.column)
+  const rows: { spaceBefore: number; cells: ScaffoldCell[] }[] = []
+  let previousRow = -1
+  let endColumn = 0
+  let cells: ScaffoldCell[] = []
+  for (const { block, row, column, span } of ordered) {
+    if (row !== previousRow) {
+      if (cells.length && endColumn < starterColumns) cells.push({ span: starterColumns - endColumn })
+      cells = []
+      rows.push({ spaceBefore: 12 + (row - previousRow - 1) * 36, cells })
+      previousRow = row
+      endColumn = 0
+    }
+    if (column > endColumn) cells.push({ span: column - endColumn })
+    const { id, kind, text } = block
+    cells.push({ span, block: { id, kind, text } })
+    endColumn = column + span
+  }
+  if (cells.length && endColumn < starterColumns) cells.push({ span: starterColumns - endColumn })
+  return { id, title, rows }
 }
 
 function dartLiteral(value: string): string {
@@ -121,7 +152,7 @@ export function createScaffolder(assets: URL): ScaffoldProject {
     const title = brief.title?.trim() || 'App Studio App'
     const layout = brief.layout ?? defaultLayout(title)
     if (!layout.screens.length) throw new Error('Add at least one screen to the starter layout.')
-    const design = JSON.stringify(layout.screens)
+    const design = JSON.stringify(layout.screens.map(scaffoldScreen))
     const hash = createHash('sha256').update(batchId).digest('hex').slice(0, 16)
     const variables = {
       APP_ID: `dev.appstudio.generated.a${hash}`,

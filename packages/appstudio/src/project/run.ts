@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import { access } from 'node:fs/promises'
-import { join } from 'node:path'
+import { access, mkdir, rm } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import type { AndroidRuntimeManager, RuntimeEndpoint, RuntimeProcessOptions } from '../runtime/manager.ts'
 import type { ProjectRunConfig, ProjectRunEvent, ProjectView } from '../shared/protocol.ts'
-import { captureScene, deployProject } from './device.ts'
+import { deploymentRecord, type DeploymentRecord } from './deployment.ts'
+import { captureScene, deployProject, resumeProject } from './device.ts'
 import type { FrameworkCapability } from './frameworks.ts'
+import { readJson, saveJson } from './job-state.ts'
 import { projectArchive, projectDirectory } from './source.ts'
 
 const empty: ProjectView = { activeRole: 'live', projectRoot: '', framework: null, applicationId: '', versionCode: '', restored: false }
@@ -21,25 +23,79 @@ export interface CandidateRun {
 export class ProjectRun {
   private active?: { endpoint: RuntimeEndpoint; view: ProjectView }
   private busy = false
+  private restoring?: Promise<ProjectView>
+
+  constructor(private readonly recordPath: string) {}
 
   status(manager: AndroidRuntimeManager | undefined): ProjectView {
     return this.active && manager?.currentEndpoint() === this.active.endpoint ? this.active.view : empty
   }
 
   isBusy(): boolean {
-    return this.busy
+    return this.busy || !!this.restoring
+  }
+
+  async restore(manager: AndroidRuntimeManager, signal: AbortSignal, legacy?: ProjectView): Promise<ProjectView> {
+    const current = this.status(manager)
+    const endpoint = manager.currentEndpoint()
+    if (current.framework || !endpoint || this.busy || signal.aborted) return current
+    if (this.restoring) return this.restoring
+
+    const ownerId = manager.activeOwner(endpoint)
+    if (!ownerId) return current
+    const stored = await readJson<unknown>(this.recordPath).catch(() => null)
+    const saved = deploymentRecord.safeParse(stored === undefined ? { ownerId, project: legacy } : stored)
+    if (!saved.success || saved.data.ownerId !== ownerId) return this.status(manager)
+
+    if (this.restoring) return this.restoring
+    if (this.busy || signal.aborted || manager.currentEndpoint() !== endpoint || this.status(manager).framework) {
+      return this.status(manager)
+    }
+    this.restoring = this.resume(manager, endpoint, saved.data, stored === undefined, signal)
+      .finally(() => { this.restoring = undefined })
+    return this.restoring
+  }
+
+  private async resume(
+    manager: AndroidRuntimeManager, endpoint: RuntimeEndpoint,
+    record: DeploymentRecord, migrate: boolean, signal: AbortSignal,
+  ): Promise<ProjectView> {
+    let release: (() => void) | undefined
+    const { project, ownerId } = record
+    try {
+      release = manager.acquireUse()
+      const root = await projectDirectory(project.projectRoot)
+      if (root.toLowerCase() !== project.projectRoot.toLowerCase()) return this.status(manager)
+      await access(join(root, marker[project.framework]))
+      await manager.waitForDevice(endpoint, project.activeRole, signal)
+      await resumeProject(endpoint, project.activeRole, project.applicationId, project.versionCode, signal)
+      if (signal.aborted || manager.currentEndpoint() !== endpoint) return this.status(manager)
+      this.active = { endpoint, view: project }
+      if (migrate) await this.saveDeployment(ownerId, project).catch(() => {})
+    } catch {
+      // A moved project or a missing app needs a new deployment from the Workbench.
+    } finally {
+      release?.()
+    }
+    return this.status(manager)
+  }
+
+  private async saveDeployment(ownerId: string, project: ProjectView): Promise<void> {
+    await mkdir(dirname(this.recordPath), { recursive: true })
+    await saveJson(this.recordPath, { ownerId, project })
   }
 
   async *execute(
     manager: AndroidRuntimeManager, adapter: FrameworkCapability, config: ProjectRunConfig, rebuild: boolean,
     signal: AbortSignal, candidate?: CandidateRun,
   ): AsyncIterable<ProjectRunEvent> {
-    if (this.busy) {
-      yield { kind: 'error', text: 'A project build is already running.' }
+    if (this.isBusy()) {
+      yield { kind: 'error', text: 'A project build or preview restore is already running.' }
       return
     }
     this.busy = true
     let release: (() => void) | undefined
+    let startingRuntime = false
     try {
       signal.throwIfAborted()
       const projectRoot = await projectDirectory(config.projectRoot)
@@ -52,9 +108,17 @@ export class ProjectRun {
       const same = current.framework === framework && current.projectRoot.toLowerCase() === projectRoot.toLowerCase()
       if (rebuild && !same) throw new Error('Run this project before rebuilding and restoring its scene.')
       if (!rebuild && same) throw new Error('Use Rebuild and restore to keep the active test scene.')
-      yield { kind: 'progress', text: 'Starting the dedicated Android runtime.' }
-      const endpoint = await manager.start()
+      let endpoint = manager.currentEndpoint()
+      if (!endpoint) {
+        if (rebuild) throw new Error('The Android runtime stopped before rebuilding the candidate.')
+        startingRuntime = true
+        yield { kind: 'progress', text: 'Starting the dedicated Android runtime.', stage: 'runtime-start' }
+        endpoint = await manager.start()
+        startingRuntime = false
+      }
       signal.throwIfAborted()
+      const ownerId = manager.activeOwner(endpoint)
+      if (!ownerId) throw new Error('The Android runtime stopped during the project run.')
       release = manager.acquireUse()
       const run = (args: readonly string[], options?: RuntimeProcessOptions) =>
         manager.runProjectCommand(endpoint, args, { ...options, signal })
@@ -85,9 +149,15 @@ export class ProjectRun {
       if (rebuild && artifact.applicationId !== current.applicationId) {
         throw new Error('The new APK uses a different application ID. The active test scene was kept.')
       }
-      await candidate?.onValidation()
       const currentRole = current.framework ? current.activeRole : undefined
       const role = currentRole === 'live' || (!currentRole && candidate) ? 'candidate' : 'live'
+      startingRuntime = !endpoint.devices.some(device => device.id === role)
+      if (startingRuntime) {
+        yield { kind: 'progress', text: 'Waiting for the target Android device to finish starting.', stage: 'runtime-start' }
+      }
+      await manager.waitForDevice(endpoint, role, signal)
+      startingRuntime = false
+      await candidate?.onValidation()
       let scene = rebuild ? await captureScene(endpoint, current.activeRole, current.applicationId, signal) : undefined
       yield { kind: 'progress', text: scene ? 'Restarting the app on the candidate device and restoring the current scene.' : 'Installing and launching the debug app.' }
       let deployed = await deployProject(endpoint, role, artifact, scene, signal)
@@ -115,9 +185,18 @@ export class ProjectRun {
         await candidate.beforePromote()
       }
       this.active = { endpoint, view }
+      try {
+        await this.saveDeployment(ownerId, view)
+      } catch {
+        await rm(this.recordPath, { force: true }).catch(() => {})
+        yield { kind: 'log', text: 'The active preview could not be saved for the next DSH launch.' }
+      }
       yield { kind: 'ready', project: view }
     } catch (error) {
-      if (!signal.aborted) yield { kind: 'error', text: error instanceof Error ? error.message : String(error) }
+      if (!signal.aborted) yield {
+        kind: 'error', text: error instanceof Error ? error.message : String(error),
+        ...(startingRuntime ? { stage: 'runtime-start' } : {}),
+      }
     } finally {
       release?.()
       this.busy = false

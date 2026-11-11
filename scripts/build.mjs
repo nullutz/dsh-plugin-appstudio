@@ -1,10 +1,13 @@
-import { cp, mkdir } from 'node:fs/promises'
+import { cp, mkdir, readFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 
 const pkg = fileURLToPath(new URL('../packages/appstudio/', import.meta.url))
 const runtime = new URL('../packages/appstudio/lib/runtime/', import.meta.url)
+const manifest = JSON.parse(await readFile(new URL('../packages/appstudio/package.json', import.meta.url), 'utf8'))
+const runtimePrefix = 'lib/runtime/'
+const runtimeFiles = manifest.files.filter(path => path.startsWith(runtimePrefix)).map(path => path.slice(runtimePrefix.length))
 const compiler = fileURLToPath(new URL('../node_modules/typescript/bin/tsc', import.meta.url))
 execFileSync(process.execPath, [
   compiler, '-p', 'tsconfig.host.json', '--noEmit', 'false', '--declaration', '--emitDeclarationOnly',
@@ -35,10 +38,10 @@ await Promise.all([
   }),
   (async () => {
     await mkdir(runtime, { recursive: true })
-    await cp(new URL('../packages/appstudio/runtime/', import.meta.url), runtime, {
-      recursive: true,
-      filter: (source) => !source.endsWith('__pycache__'),
-    })
-    await cp(new URL('../runtime-lock.json', import.meta.url), new URL('runtime-lock.json', runtime))
+    await Promise.all(runtimeFiles.map(file => {
+      if (!/^[a-z0-9][a-z0-9._-]*$/i.test(file)) throw new Error('List runtime assets by exact filename in package.json.')
+      const source = file === 'runtime-lock.json' ? '../runtime-lock.json' : '../packages/appstudio/runtime/' + file
+      return cp(new URL(source, import.meta.url), new URL(file, runtime))
+    }))
   })(),
 ])

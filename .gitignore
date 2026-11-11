@@ -4,3 +4,9 @@ node_modules/
 /packages/appstudio/lib/
 /packages/.typert-protocol/
 __pycache__/
+/.dsh/
+.credentials.yaml
+.env
+.env.*
+!.env.example
+!.env.template

@@ -89,12 +89,12 @@ public final class MainActivity extends Activity {
         LinearLayout content = column();
         content.setPadding(0, dp(12), 0, dp(20));
         content.addView(text(current.optString("title"), 21, true));
-        JSONArray blocks = current.optJSONArray("blocks");
-        for (int i = 0; i < blocks.length(); i++) {
-            View block = renderBlock(blocks.optJSONObject(i), currentId);
+        JSONArray rows = current.optJSONArray("rows");
+        for (int i = 0; i < rows.length(); i++) {
+            JSONObject row = rows.optJSONObject(i);
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            params.topMargin = dp(12);
-            content.addView(block, params);
+            params.topMargin = dp(row.optInt("spaceBefore"));
+            content.addView(renderLayoutRow(row.optJSONArray("cells"), currentId), params);
         }
         scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -109,6 +109,23 @@ public final class MainActivity extends Activity {
             });
             persist();
         });
+    }
+
+    private LinearLayout renderLayoutRow(JSONArray cells, String currentId) {
+        LinearLayout row = new LinearLayout(this);
+        row.setBaselineAligned(false);
+        int inset = cells.length() == 1 ? 0 : dp(4);
+        for (int i = 0; i < cells.length(); i++) {
+            JSONObject cell = cells.optJSONObject(i);
+            JSONObject block = cell.optJSONObject("block");
+            LinearLayout track = column();
+            if (block != null) {
+                track.setPadding(inset, 0, inset, 0);
+                track.addView(renderBlock(block, currentId));
+            }
+            row.addView(track, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, cell.optInt("span")));
+        }
+        return row;
     }
 
     private View renderBlock(JSONObject block, String currentId) {

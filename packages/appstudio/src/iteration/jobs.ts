@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto'
 import { lstat, mkdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import type { ProjectRun } from '../project/run.ts'
 import type { FrameworkCapability } from '../project/frameworks.ts'
 import { readJson, saveJson } from '../project/job-state.ts'
 import type { AndroidRuntimeManager } from '../runtime/manager.ts'
 import type { IterationComment, IterationOutcome, IterationRequest, IterationView } from '../shared/protocol.ts'
-import { applyCandidateChanges, collectCandidateChanges, createCandidateMirror, type CandidateBaseline } from './changes.ts'
+import { IterationAdmissionError } from './admission.ts'
+import { applyCandidateChanges, collectCandidateChanges, createCandidateMirror, type CandidateBaseline, type CandidateFile } from './changes.ts'
 
 const idPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/
 const reportsFile = '.appstudio-iteration-result.json'
@@ -20,6 +22,7 @@ interface Job {
   mirrorBatch: string
   view: IterationView
   baseline?: CandidateBaseline
+  candidateFiles?: CandidateFile[]
 }
 
 interface IterationExecution {
@@ -43,16 +46,16 @@ function validFrame(frame: string): boolean {
 
 function validate(request: IterationRequest): void {
   if (!idPattern.test(request.batchId) || !request.sessionId || request.sessionId.length > 256 ||
-      request.repairNote.length > 2000) throw new Error('Invalid iteration submission.')
+      request.repairNote.length > 2000) throw new IterationAdmissionError('Invalid iteration submission.')
   if (request.retryOf !== null) {
     if (!idPattern.test(request.retryOf) || request.retryOf === request.batchId || request.comments.length) {
-      throw new Error('Invalid iteration retry.')
+      throw new IterationAdmissionError('Invalid iteration retry.')
     }
     return
   }
   if (!request.comments.length || request.comments.length > 10 || request.repairNote ||
       new Set(request.comments.map(comment => comment.id)).size !== request.comments.length) {
-    throw new Error('Submit between one and ten distinct comments.')
+    throw new IterationAdmissionError('Submit between one and ten distinct comments.')
   }
   for (const comment of request.comments) {
     const { selection, frameWidth, frameHeight } = comment
@@ -62,7 +65,7 @@ function validate(request: IterationRequest): void {
         selection.height < 1 || selection.x + selection.width > frameWidth || selection.y + selection.height > frameHeight ||
         frameWidth > 8192 || frameHeight > 8192 ||
         (selection.kind === 'point' && (selection.width !== 1 || selection.height !== 1)) ||
-        !validFrame(comment.frame)) throw new Error('A comment has invalid coordinates, text, or a JPEG frame.')
+        !validFrame(comment.frame)) throw new IterationAdmissionError('A comment has invalid coordinates, text, or a JPEG frame.')
   }
 }
 
@@ -135,14 +138,18 @@ export class IterationJobs {
       const existing = this.active?.view.batchId === request.batchId && this.active.view.projectRoot === request.projectRoot
         ? this.active : await this.readJob(directory, request.batchId)
       if (existing) {
-        if (existing.requestHash !== requestHash) throw new Error('This iteration ID already belongs to a different submission.')
+        if (existing.requestHash !== requestHash) throw new IterationAdmissionError('This iteration ID already belongs to a different submission.')
         return existing === this.active ? existing.view : this.recover(existing).view
       }
-      if (this.task || execution.project.isBusy()) throw new Error('App Studio is already running a build or iteration.')
+      if (this.task || execution.project.isBusy()) throw new IterationAdmissionError('App Studio is already running a build or iteration.')
       execution.signal.throwIfAborted()
       const project = execution.project.status(execution.manager)
       if (!project.framework || project.projectRoot !== request.projectRoot) {
-        throw new Error('Run this project in Live before submitting an iteration.')
+        throw new IterationAdmissionError('Run this project in Live before submitting an iteration.')
+      }
+      const background = project.activeRole === 'live' ? 'candidate' : 'live'
+      if (!execution.manager.currentEndpoint()?.devices.some(device => device.id === background)) {
+        throw new IterationAdmissionError('The background Android device must be ready before submitting an iteration.')
       }
       let previous: Job | undefined
       if (request.retryOf !== null) {
@@ -151,23 +158,27 @@ export class IterationJobs {
           ? await this.readJob(directory, request.retryOf) : undefined
         if (!previous || this.recover(previous).view.phase !== 'failed' ||
             previous.view.sessionId !== request.sessionId || !previous.baseline) {
-          throw new Error('Only the latest failed iteration can be repaired in its original session.')
+          throw new IterationAdmissionError('Only the latest failed iteration can be retried in its original session.')
         }
       }
+      const retained = previous?.view.canRetryBuild === true && !request.repairNote.trim() ? previous : undefined
       const view: IterationView = {
         batchId: request.batchId, sessionId: request.sessionId, projectRoot: request.projectRoot,
-        phase: 'queued', detail: 'Iteration submitted.', log: '', diff: '', project: null, outcomes: [],
+        sourceDeploymentId: project.deploymentId,
+        phase: 'queued', detail: 'Iteration submitted.', log: '', diff: '', project: null,
+        outcomes: retained?.view.outcomes ?? [],
       }
       const job: Job = {
         requestHash, view, comments: previous?.comments ?? request.comments,
         mirrorBatch: previous?.mirrorBatch ?? request.batchId, baseline: previous?.baseline,
+        candidateFiles: retained?.candidateFiles,
       }
       await mkdir(directory, { recursive: true })
       await mkdir(join(directory, request.batchId))
       await this.saveJob(directory, job)
       await saveJson(join(directory, 'latest.json'), { batchId: request.batchId })
       this.active = job
-      const task = this.run(directory, job, execution, request.repairNote, previous?.view.log ?? '')
+      const task = this.run(directory, job, execution, !!retained, request.repairNote, previous?.view.log ?? '')
       this.task = task
       void task.finally(() => { if (this.task === task) this.task = undefined }).catch(() => {})
       return view
@@ -176,7 +187,9 @@ export class IterationJobs {
     }
   }
 
-  private async run(directory: string, job: Job, execution: IterationExecution, repairNote: string, previousLog: string): Promise<void> {
+  private async run(
+    directory: string, job: Job, execution: IterationExecution, retryBuild: boolean, repairNote: string, previousLog: string,
+  ): Promise<void> {
     const { view } = job
     const { project, manager, adapter, signal } = execution
     let release: (() => void) | undefined
@@ -184,7 +197,9 @@ export class IterationJobs {
     try {
       signal.throwIfAborted()
       const active = project.status(manager)
-      if (!active.framework || active.projectRoot !== view.projectRoot) throw new Error('The active Live project changed.')
+      if (!active.framework || active.projectRoot !== view.projectRoot || active.deploymentId !== view.sourceDeploymentId) {
+        throw new Error('The active Live project changed.')
+      }
       release = manager.acquireUse()
       const root = join(directory, job.mirrorBatch, 'candidate')
       if (!job.baseline) {
@@ -192,24 +207,33 @@ export class IterationJobs {
       } else if (job.baseline.sourceRoot !== view.projectRoot || job.baseline.candidateRoot !== root) {
         throw new Error('The retained candidate does not match the project.')
       }
-      await rm(join(root, reportsFile), { force: true })
-      await this.update(directory, job, 'editing', 'Agent is editing the candidate source.')
-      this.lease = { sessionId: view.sessionId, batchId: view.batchId, root }
-      let turn: number
-      try {
-        ({ turn } = await execution.submit({
-          projectRoot: view.projectRoot, sessionId: view.sessionId, batchId: view.batchId,
-          comments: job.comments, repairNote, previousLog: previousLog.slice(-12000),
-        }, AbortSignal.any([signal, AbortSignal.timeout(15 * 60_000)])))
-      } finally {
-        this.lease = undefined
+      if (retryBuild) {
+        this.append(job, 'Retrying build and scene validation with the retained candidate.')
+      } else {
+        await rm(join(root, reportsFile), { force: true })
+        await this.update(directory, job, 'editing', 'Agent is editing the candidate source.')
+        this.lease = { sessionId: view.sessionId, batchId: view.batchId, root }
+        try {
+          const { turn } = await execution.submit({
+            projectRoot: view.projectRoot, sessionId: view.sessionId, batchId: view.batchId,
+            comments: job.comments, repairNote, previousLog: previousLog.slice(-12000),
+          }, AbortSignal.any([signal, AbortSignal.timeout(15 * 60_000)]))
+          this.append(job, 'DSH turn ' + turn + ' completed.')
+        } finally {
+          this.lease = undefined
+        }
+        signal.throwIfAborted()
+        view.outcomes = await outcomes(root, job.comments)
       }
-      this.append(job, 'DSH turn ' + turn + ' completed.')
-      signal.throwIfAborted()
-      view.outcomes = await outcomes(root, job.comments)
+      const retainedFiles = job.candidateFiles
+      job.candidateFiles = undefined
       const changes = await collectCandidateChanges(job.baseline, signal)
+      if (retainedFiles && !isDeepStrictEqual(retainedFiles, changes.candidateFiles)) {
+        throw new Error('The retained candidate changed after its last build. Ask the Agent to review it before building again.')
+      }
       view.diff = changes.diff
       if (!changes.count) throw new Error('The Agent produced no source changes to build.')
+      job.candidateFiles = changes.candidateFiles
       await this.update(directory, job, 'building', 'Building the Agent candidate.')
       for await (const event of project.execute(manager, adapter, { projectRoot: view.projectRoot, framework: active.framework }, true, signal, {
         sourceRoot: root,
@@ -232,6 +256,7 @@ export class IterationJobs {
       await this.update(directory, job, 'applied', 'Validated changes applied. Live is switching to the restored candidate.')
     } catch (error) {
       this.append(job, message(error))
+      if (!applied) view.canRetryBuild = job.candidateFiles !== undefined
       await this.update(directory, job, applied ? 'applied' : 'failed', applied
         ? 'Source changes were applied. Check Live status before continuing.'
         : message(error).slice(0, 1800)).catch(() => {})
@@ -267,6 +292,11 @@ export class IterationJobs {
     if (!isTerminal(job.view.phase)) {
       job.view.phase = 'failed'
       job.view.detail = 'The Host stopped before this iteration finished. Inspect the DSH session and retained candidate before retrying.'
+    }
+    if (job.view.phase === 'failed') {
+      // Older jobs recorded this step after collecting the Agent's changes, before storing the candidate manifest.
+      job.view.canRetryBuild ??= !!job.baseline && (job.candidateFiles !== undefined ||
+        (!!job.view.diff && /(?:^|\n)(?:Building a standalone debug APK inside WSL2\.|Restarting the app on the candidate device and restoring the current scene\.)(?:\n|$)/u.test(job.view.log)))
     }
     return job
   }

@@ -14,6 +14,8 @@ test('validates input against either device orientation and rejects extra fields
     appStudioInput: { ...landscape.appStudioInput, x: 1280 },
   }), device), /outside/)
   assert.throws(() => checkBrowserSignal(JSON.stringify({ bye: true, destination: 'other' }), device))
+  assert.equal(checkBrowserSignal('{"appStudioPreviewReady":true}', device), '{"appStudioPreviewReady":true}')
+  assert.throws(() => checkBrowserSignal('{"appStudioPreviewReady":true,"role":"live"}', device))
 })
 
 test('refuses an untrusted gateway before opening the socket', async () => {

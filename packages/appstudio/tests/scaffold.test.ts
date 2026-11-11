@@ -12,8 +12,8 @@ const title = 'Notes "$studio" & O\'Brien 测试'
 const layout: StarterLayout = { screens: [
   { id: 'today', title: 'Today', blocks: [
     { id: 'title', kind: 'heading', text: 'Schedule __APP_ID__' },
-    { id: 'draft', kind: 'input', text: 'Write a draft' },
-    { id: 'next', kind: 'button', text: 'Open archive' },
+    { id: 'next', kind: 'button', text: 'Open archive', position: { row: 2, column: 8, span: 4 } },
+    { id: 'draft', kind: 'input', text: 'Write a draft', position: { row: 2, column: 1, span: 6 } },
   ] },
   { id: 'archive', title: 'Archive', blocks: [{ id: 'items', kind: 'list', text: 'One\nTwo' }] },
 ] }
@@ -32,6 +32,23 @@ for (const framework of ['android', 'flutter', 'react-native'] as const satisfie
     assert.match(entry, /Archive/)
     assert.match(entry, /测试/)
     assert.doesNotMatch(entry, /__DESIGN_\w+__|__TITLE_\w+__/)
+    const designLiteral = entry.match(/^(?:const _design|\s*private static final String DESIGN|const screens: Screen\[\]) = (.+);$/m)?.[1]
+    assert(designLiteral)
+    const design = JSON.parse(framework === 'react-native' ? designLiteral : JSON.parse(designLiteral))
+    assert.deepEqual(design, [
+      { id: 'today', title: 'Today', rows: [
+        { spaceBefore: 12, cells: [{ span: 12, block: { id: 'title', kind: 'heading', text: 'Schedule __APP_ID__' } }] },
+        { spaceBefore: 48, cells: [
+          { span: 1 },
+          { span: 6, block: { id: 'draft', kind: 'input', text: 'Write a draft' } },
+          { span: 1 },
+          { span: 4, block: { id: 'next', kind: 'button', text: 'Open archive' } },
+        ] },
+      ] },
+      { id: 'archive', title: 'Archive', rows: [
+        { spaceBefore: 12, cells: [{ span: 12, block: { id: 'items', kind: 'list', text: 'One\nTwo' } }] },
+      ] },
+    ])
     assert.equal(files.scenePaths.includes(files.editableEntry), false)
     for (const path of files.scenePaths) assert((await readFile(join(root, path))).length > 0)
 

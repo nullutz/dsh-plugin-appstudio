@@ -8,11 +8,24 @@ export interface AndroidDevice {
 
 export type RuntimePhase = 'unsupported' | 'unconfigured' | 'preparing' | 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
 
+export const runtimeIssues = [
+  'host-platform', 'host-architecture', 'wsl-unavailable', 'wsl-kernel', 'wsl-virtualization',
+  'runtime-missing', 'runtime-ownership', 'runtime-version', 'runtime-storage', 'rootfs-download', 'rootfs-integrity',
+  'guest-architecture', 'kvm-unavailable', 'guest-resources', 'linux-dependencies', 'sdk-download',
+  'sdk-invalid', 'gateway-dependencies', 'build-dependencies', 'avd-startup', 'gateway-loopback', 'gateway-startup',
+] as const
+export type RuntimeIssue = typeof runtimeIssues[number]
+
 export interface RuntimeView {
   phase: RuntimePhase
   detail: string
   androidEnabled: boolean
   devices: AndroidDevice[]
+  supportsForegroundStart?: boolean
+  configured?: boolean
+  issue?: RuntimeIssue
+  background?: 'starting' | 'failed'
+  resumeExpected?: boolean
   frameworks: FrameworkId[]
   commentingEnabled: boolean
   iterationEnabled: boolean
@@ -38,18 +51,25 @@ export interface ProjectView {
 }
 
 export type ProjectRunEvent =
-  | { kind: 'progress'; text: string }
+  | { kind: 'progress'; text: string; stage?: 'runtime-start' }
   | { kind: 'log'; text: string }
-  | { kind: 'error'; text: string }
+  | { kind: 'error'; text: string; stage?: 'runtime-start' }
   | { kind: 'ready'; project: ProjectView }
 
 export type GenerationMode = 'layout' | 'prompt'
 export type StarterBlockKind = 'heading' | 'text' | 'image' | 'input' | 'button' | 'list' | 'divider'
 
+export interface StarterBlockPosition {
+  row: number
+  column: number
+  span: number
+}
+
 export interface StarterBlock {
   id: string
   kind: StarterBlockKind
   text: string
+  position?: StarterBlockPosition
 }
 
 export interface StarterScreen {
@@ -76,10 +96,11 @@ export interface GenerationView extends ProjectRunConfig {
   batchId: string
   mode: GenerationMode
   sessionId: string | null
-  phase: 'queued' | 'scaffolding' | 'editing' | 'building' | 'validating' | 'applied' | 'failed'
+  phase: 'queued' | 'scaffolding' | 'editing' | 'starting' | 'building' | 'validating' | 'applied' | 'failed'
   detail: string
   log: string
   project: ProjectView | null
+  canRetryBuild?: boolean
 }
 
 export interface IterationSelection {
@@ -125,10 +146,12 @@ export interface IterationView {
   batchId: string
   sessionId: string
   projectRoot: string
+  sourceDeploymentId?: string
   phase: 'queued' | 'editing' | 'building' | 'validating' | 'applied' | 'failed'
   detail: string
   log: string
   diff: string
   project: ProjectView | null
   outcomes: IterationOutcome[]
+  canRetryBuild?: boolean
 }

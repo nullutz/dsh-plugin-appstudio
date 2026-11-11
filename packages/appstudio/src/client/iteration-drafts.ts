@@ -1,4 +1,4 @@
-import type { IterationComment } from '../shared/protocol.ts'
+import type { IterationComment, IterationRequest } from '../shared/protocol.ts'
 
 const storeName = 'comments'
 const lastProjectKey = 'dsh-appstudio.last-project'
@@ -22,11 +22,14 @@ export function lastIterationProject(projectRoot?: string): string {
 
 export function readPendingBatch(projectRoot: string): PendingBatch | undefined {
   try {
-    const value = sessionStorage.getItem('dsh-appstudio.pending:' + projectRoot)
-    return value ? JSON.parse(value) as PendingBatch : undefined
+    const batch = JSON.parse(sessionStorage.getItem('dsh-appstudio.pending:' + projectRoot) ?? 'null') as PendingBatch | null
+    if (batch && typeof batch.batchId === 'string' && typeof batch.sessionId === 'string' &&
+        (batch.retryOf === null || typeof batch.retryOf === 'string') && typeof batch.repairNote === 'string' &&
+        Array.isArray(batch.commentIds) && batch.commentIds.every(id => typeof id === 'string')) return batch
   } catch {
-    return undefined
+    // Draft storage can be unavailable when opening the Workbench.
   }
+  return undefined
 }
 
 export function writePendingBatch(projectRoot: string, batch: PendingBatch | undefined): void {
@@ -37,6 +40,22 @@ export function writePendingBatch(projectRoot: string, batch: PendingBatch | und
   } catch {
     // The Host can still accept the batch if browser session storage is unavailable.
   }
+}
+
+export function nextDrafts(comments: IterationComment[], batch: PendingBatch | undefined): IterationComment[] {
+  if (!batch?.commentIds.length) return comments
+  const submitted = new Set(batch.commentIds)
+  return comments.filter(comment => !submitted.has(comment.id))
+}
+
+export function pendingRequest(projectRoot: string, batch: PendingBatch, drafts: IterationComment[]): IterationRequest | undefined {
+  const comments: IterationComment[] = []
+  for (const id of batch.commentIds) {
+    const comment = drafts.find(draft => draft.id === id)
+    if (!comment) return undefined
+    comments.push(comment)
+  }
+  return { projectRoot, sessionId: batch.sessionId, batchId: batch.batchId, comments, retryOf: batch.retryOf, repairNote: batch.repairNote }
 }
 
 async function openDrafts(): Promise<IDBDatabase> {

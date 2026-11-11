@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/material.dart';
 import 'app_studio_scene.dart';
 
@@ -100,7 +101,7 @@ class _StarterAppState extends State<StarterApp> {
   @override
   Widget build(BuildContext context) {
     final style = Theme.of(context).textTheme;
-    final blocks = (_screen['blocks'] as List).cast<Map<String, dynamic>>();
+    final rows = (_screen['rows'] as List).cast<Map<String, dynamic>>();
     return Scaffold(
       appBar: AppBar(title: const Text(_title)),
       body: SafeArea(
@@ -123,14 +124,36 @@ class _StarterAppState extends State<StarterApp> {
           Expanded(child: SingleChildScrollView(
             key: ValueKey(_screenId),
             controller: _scroll,
+            dragStartBehavior: DragStartBehavior.down,
             padding: const EdgeInsets.all(20),
             child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               Text(_screen['title'] as String, style: style.titleLarge),
-              for (final block in blocks)
-                Padding(padding: const EdgeInsets.only(top: 12), child: _block(block)),
+              for (final row in rows) _layoutRow(row),
             ]),
           )),
         ]),
+      ),
+    );
+  }
+
+  Widget _layoutRow(Map<String, dynamic> row) {
+    final cells = (row['cells'] as List).cast<Map<String, dynamic>>();
+    return Padding(
+      padding: EdgeInsets.only(top: (row['spaceBefore'] as num).toDouble()),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final cell in cells)
+            Expanded(
+              flex: cell['span'] as int,
+              child: cell['block'] == null
+                  ? const SizedBox.shrink()
+                  : Padding(
+                      padding: EdgeInsets.symmetric(horizontal: cells.length == 1 ? 0 : 4),
+                      child: _block(cell['block'] as Map<String, dynamic>),
+                    ),
+            ),
+        ],
       ),
     );
   }
@@ -147,7 +170,8 @@ class _StarterAppState extends State<StarterApp> {
         height: 126,
         decoration: BoxDecoration(color: theme.colorScheme.primaryContainer, borderRadius: BorderRadius.circular(20)),
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          const Icon(Icons.image_outlined), Text(text),
+          const Icon(Icons.image_outlined),
+          Flexible(child: Text(text, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, maxLines: 4)),
         ]),
       ),
       'input' => TextFormField(

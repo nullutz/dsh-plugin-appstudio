@@ -8,6 +8,7 @@ import type { CandidateLease } from '../iteration/candidate-tools.ts'
 import { applyCandidateChanges, collectCandidateChanges, createCandidateMirror, type CandidateBaseline, type CandidateFile } from '../iteration/changes.ts'
 import { readJson, saveJson } from '../project/job-state.ts'
 import type { GenerationRequest, GenerationView } from '../shared/protocol.ts'
+import { starterColumns, starterRows, validStarterBlockPositions } from '../shared/starter-layout.ts'
 import type { GenerationCoordinator, GenerationExecution } from './contract.ts'
 import type { GenerationBrief } from './prompt.ts'
 
@@ -20,6 +21,11 @@ const screen = z.strictObject({
     id: designId,
     kind: z.enum(['heading', 'text', 'image', 'input', 'button', 'list', 'divider']),
     text: z.string().trim().max(400),
+    position: z.strictObject({
+      row: z.number().int().min(0).max(starterRows - 1),
+      column: z.number().int().min(0).max(starterColumns - 1),
+      span: z.number().int().min(1).max(starterColumns),
+    }).optional(),
   })).max(12),
 })
 const submission = z.strictObject({
@@ -50,13 +56,27 @@ interface GenerationJob {
   mirrorBatch: string
   view: GenerationView
   candidate?: RetainedCandidate
+  generatedFiles?: CandidateFile[]
+  resumeBuild?: boolean
   publishFiles?: CandidateFile[]
+}
+
+function legacyRuntimeFailure(job: GenerationJob): boolean {
+  // Older jobs logged the completed turn and runtime startup without a typed failure stage.
+  const startup = '\nStarting the dedicated Android runtime.\n'
+  const offset = job.view.log.lastIndexOf(startup)
+  return !!job.candidate && offset >= 0 &&
+    /(?:^|\n)DSH turn \d+ completed\.(?:\n|$)/u.test(job.view.log.slice(0, offset)) &&
+    job.view.log.slice(offset + startup.length) === job.view.detail + '\n'
 }
 
 function validate(input: GenerationRequest): GenerationRequest {
   const parsed = submission.safeParse(input)
   if (!parsed.success) throw new Error('The generation request has invalid fields or exceeds its size limits.')
   const request = parsed.data
+  if (request.layout?.screens.some(screen => !validStarterBlockPositions(screen.blocks))) {
+    throw new Error('Layout blocks must fit inside the screen grid without overlapping.')
+  }
   if (request.retryOf !== null) {
     if (request.retryOf === request.batchId) throw new Error('Use a new batch ID for a generation retry.')
     return request
@@ -144,24 +164,31 @@ export class GenerationJobs implements GenerationCoordinator {
       }
       execution.signal.throwIfAborted()
       await requireEmptySource(request.projectRoot)
+      const { name, brief, layout, framework, mode } = request
+      const requestedBrief = { name, brief, layout, framework, mode }
+      const latest = await readJson<{ batchId: string }>(join(directory, 'latest.json'))
+      const saved = latest && await this.readJob(directory, latest.batchId)
+      const retained = saved && await this.recover(saved)
       let previous: GenerationJob | undefined
       if (request.retryOf !== null) {
-        const latest = await readJson<{ batchId: string }>(join(directory, 'latest.json'))
-        const saved = latest?.batchId === request.retryOf ? await this.readJob(directory, request.retryOf) : undefined
-        previous = saved && await this.recover(saved)
-        if (!previous || previous.view.phase !== 'failed' || previous.brief.mode !== request.mode ||
-            previous.brief.framework !== request.framework) {
+        if (!retained || retained.view.batchId !== request.retryOf || retained.view.phase !== 'failed' ||
+            retained.brief.mode !== request.mode || retained.brief.framework !== request.framework) {
           throw new Error('Retry only the latest failed generation in its original mode and framework.')
         }
+        previous = retained
+      } else if (retained?.view.phase === 'failed' && isDeepStrictEqual(retained.brief, requestedBrief)) {
+        previous = retained
       }
-      const { name, brief, layout, framework, mode } = request
       const view: GenerationView = {
         batchId: request.batchId, projectRoot: request.projectRoot, framework, mode,
         sessionId: previous?.view.sessionId ?? null, phase: 'queued', detail: 'Generation submitted.', log: '', project: null,
       }
+      const resumeBuild = !request.repairNote && previous?.view.canRetryBuild === true
       const job: GenerationJob = {
-        requestHash, view, brief: previous?.brief ?? { name, brief, layout, framework, mode },
+        requestHash, view, brief: previous?.brief ?? requestedBrief,
         mirrorBatch: previous?.candidate ? previous.mirrorBatch : request.batchId, candidate: previous?.candidate,
+        generatedFiles: resumeBuild ? previous?.generatedFiles : undefined,
+        resumeBuild: resumeBuild || undefined,
       }
       await mkdir(join(directory, request.batchId), { recursive: true })
       await this.save(directory, job)
@@ -176,7 +203,9 @@ export class GenerationJobs implements GenerationCoordinator {
     }
   }
 
-  private async run(directory: string, job: GenerationJob, execution: GenerationExecution, repairNote: string, previousLog: string): Promise<void> {
+  private async run(
+    directory: string, job: GenerationJob, execution: GenerationExecution, repairNote: string, previousLog: string,
+  ): Promise<void> {
     const { view, brief } = job
     const { project, manager, adapter, signal } = execution
     const root = join(directory, job.mirrorBatch, 'candidate')
@@ -206,19 +235,27 @@ export class GenerationJobs implements GenerationCoordinator {
         view.sessionId = (await execution.createSession(view.projectRoot, signal)).id
         await this.save(directory, job)
       }
-      await this.update(directory, job, 'editing', 'Agent is building the app from your brief.')
-      this.lease = { sessionId: view.sessionId, batchId: view.batchId, root, editScope: job.candidate.editScope }
-      try {
-        const { turn } = await execution.generate({
-          projectRoot: view.projectRoot, sessionId: view.sessionId, batchId: view.batchId, brief,
-          editScope: job.candidate.editScope, repairNote, previousLog: previousLog.slice(-12000),
-        }, AbortSignal.any([signal, AbortSignal.timeout(15 * 60_000)]))
-        this.append(job, `DSH turn ${turn} completed.`)
-      } finally {
-        this.lease = undefined
+      if (job.resumeBuild) {
+        await this.update(directory, job, 'building', 'Reusing the generated source and retrying build and launch.')
+      } else {
+        await this.update(directory, job, 'editing', 'Agent is generating the source. Open the generation session to follow its progress.')
+        this.lease = { sessionId: view.sessionId, batchId: view.batchId, root, editScope: job.candidate.editScope }
+        try {
+          const { turn } = await execution.generate({
+            projectRoot: view.projectRoot, sessionId: view.sessionId, batchId: view.batchId, brief,
+            editScope: job.candidate.editScope, repairNote, previousLog: previousLog.slice(-12000),
+          }, AbortSignal.any([signal, AbortSignal.timeout(15 * 60_000)]))
+          this.append(job, `DSH turn ${turn} completed.`)
+        } finally {
+          this.lease = undefined
+        }
       }
       const changes = await collectCandidateChanges(job.candidate.baseline, signal)
       verifyGeneratedSource(job.candidate, changes.candidateFiles)
+      if (job.resumeBuild && job.generatedFiles && !isDeepStrictEqual(job.generatedFiles, changes.candidateFiles)) {
+        throw new Error('The retained generated source changed after validation. Add repair instructions to have the Agent review it.')
+      }
+      job.generatedFiles = changes.candidateFiles
       await this.update(directory, job, 'building', 'Building the generated Android app.')
       for await (const event of project.execute(manager, adapter, { projectRoot: view.projectRoot, framework: view.framework }, false, signal, {
         sourceRoot: root,
@@ -231,18 +268,28 @@ export class GenerationJobs implements GenerationCoordinator {
           applied = true
         },
       })) {
-        if (event.kind === 'error') throw new Error(event.text)
+        if (event.kind === 'error') {
+          view.canRetryBuild = event.stage === 'runtime-start'
+          throw new Error(event.text)
+        }
         if (event.kind === 'ready') view.project = event.project
         else {
           this.append(job, event.text)
+          if (event.kind === 'progress') {
+            if (event.stage === 'runtime-start') view.phase = 'starting'
+            else if (view.phase === 'starting') view.phase = 'building'
+            view.detail = event.text
+          }
           await this.save(directory, job)
         }
       }
+      signal.throwIfAborted()
       if (!applied || !view.project) throw new Error('The generated project did not finish validation.')
       await this.update(directory, job, 'applied', 'Project generated and applied. Live is preparing the first frame.')
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
       this.append(job, detail)
+      view.canRetryBuild ??= !!job.generatedFiles && signal.aborted
       await this.update(directory, job, applied ? 'applied' : 'failed', applied
         ? 'Source was applied. Open the generated project in Live to continue.'
         : detail.slice(0, 1800)).catch(() => {})
@@ -273,7 +320,10 @@ export class GenerationJobs implements GenerationCoordinator {
   }
 
   private async recover(job: GenerationJob): Promise<GenerationJob> {
-    if (terminal(job.view.phase)) return job
+    if (terminal(job.view.phase)) {
+      if (job.view.phase === 'failed') job.view.canRetryBuild ??= legacyRuntimeFailure(job)
+      return job
+    }
     if (job.publishFiles && job.candidate) {
       const plan = await collectCandidateChanges({ ...job.candidate.baseline, files: job.publishFiles }).catch(() => undefined)
       if (plan?.count === 0) {
@@ -283,7 +333,10 @@ export class GenerationJobs implements GenerationCoordinator {
       }
     }
     job.view.phase = 'failed'
-    job.view.detail = 'The Host stopped before generation finished. Retry in the retained App Studio session.'
+    job.view.canRetryBuild = !!job.generatedFiles || job.resumeBuild === true
+    job.view.detail = job.view.canRetryBuild
+      ? 'The Host stopped before build and launch finished. Retry with the retained source.'
+      : 'The Host stopped before generation finished. Retry in the retained App Studio session.'
     return job
   }
 }

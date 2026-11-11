@@ -54,6 +54,20 @@ test('candidate capability rejects missing leases, links, traversal, and overlap
   assert.equal(await readFile(join(source, 'Original.txt'), 'utf8'), 'original')
 })
 
+test('candidate tools hide local credential files while keeping environment templates available', async t => {
+  const { source, candidate, signal } = await fixture(t)
+  const files = new CandidateFiles(source, () => ({ root: candidate, batchId: 'one' }))
+  await writeFile(join(candidate, '.env.local'), 'PRIVATE_TEST_VALUE')
+  await writeFile(join(candidate, '.env.example'), 'PLACEHOLDER=')
+  await writeFile(join(candidate, '.npmrc'), 'PRIVATE_TEST_VALUE')
+  assert.equal(await files.list('', signal), '.env.example')
+  assert.match(await files.read('.env.example', 1, 1, signal), /PLACEHOLDER=/)
+  await assert.rejects(files.read('.env.local', 1, 1, signal), /outside the App Studio candidate tool scope/)
+  await assert.rejects(files.delete('.npmrc', signal), /outside the App Studio candidate tool scope/)
+  await assert.rejects(files.write('upload.jks', 'test', signal), /outside the App Studio candidate tool scope/)
+  assert.equal(await readFile(join(candidate, '.env.local'), 'utf8'), 'PRIVATE_TEST_VALUE')
+})
+
 function events(...entries: readonly { type: string, data: object }[]): readonly SessionEvent[] {
   return entries.map((event, seq) => ({ ...event, seq, time: seq })) as unknown as readonly SessionEvent[]
 }

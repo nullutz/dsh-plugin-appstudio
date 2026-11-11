@@ -1,5 +1,6 @@
 import type { CandidateEditScope } from '../iteration/candidate-scope.ts'
 import type { GenerationRequest } from '../shared/protocol.ts'
+import { starterColumns } from '../shared/starter-layout.ts'
 
 export type GenerationBrief = Pick<GenerationRequest, 'framework' | 'mode' | 'name' | 'brief' | 'layout'>
 
@@ -22,7 +23,7 @@ export function generationPrompt(request: SubmitGeneration): string {
     `Keep all native bridges, package manifests, build configuration, wrapper and dependency lock files unchanged. Protected scene paths: ${editScope.protectedPaths.join(', ')}. Preserve the primary UI file’s use of the debug scene bridge and persist meaningful app state such as screen, selected item, draft and scroll position. The app must export a checkpoint after first launch and restore one on subsequent launches.`,
     'Create a usable, coherent Android app using the starter’s existing dependencies. Implement the requested screen content, navigation and meaningful controls. Use local data and placeholders where external services or assets are unspecified. Make the result useful on a narrow phone screen.',
     ...(brief.mode === 'layout' ? [
-      'Treat the visual draft as the ordered information structure. Retain its screens, block order and content intent. Refine it into a working app and fill in interaction details from the accompanying brief.',
+      `Preserve the visual draft’s screens, two-dimensional layout and content intent. Each block position is a zero-based row and column plus its width in columns, on a ${starterColumns}-column grid. Blocks sharing a row belong side by side. Retain their relative widths and spacing, including empty columns and rows. Blocks without a position occupy the full width in their original list order. Refine the draft into a working app and fill in interaction details from the accompanying brief.`,
     ] : []),
     'Use appstudio_edit_file to change existing files and appstudio_write_file for new app source or text assets. App Studio will run the toolchain. Do not ask to run build commands from this turn.',
     `Project brief (JSON data):\n${JSON.stringify(brief, null, 2)}`,

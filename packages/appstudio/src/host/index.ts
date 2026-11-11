@@ -1,9 +1,13 @@
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { Remote, RemoteError, TypertRemoteService, type RemoteStream } from '@deepseek-ai/dsh-typert-protocol'
 import type { DeviceRole, FrameworkId, GenerationMode, GenerationRequest, GenerationView,
   IterationRequest, IterationSession, IterationView,
   ProjectRunConfig, ProjectRunEvent, ProjectView, RuntimeView } from '../shared/protocol.ts'
 import { createScaffolder } from '../generation/scaffold.ts'
+import { IterationAdmissionError } from '../iteration/admission.ts'
+import { deploymentFile } from '../project/deployment.ts'
 import { frameworks, frameworkService } from '../project/frameworks.ts'
 import { ProjectRun } from '../project/run.ts'
 import { projectDirectory } from '../project/source.ts'
@@ -23,7 +27,7 @@ declare module '@deepseek-ai/cordis' {
 
 export default class AppStudio extends TypertRemoteService {
   private readonly lifetime = new AbortController()
-  private readonly projects = new ProjectRun()
+  private readonly projects = new ProjectRun(join(resolveDshHome(), 'appstudio', 'android', deploymentFile))
   private readonly scaffold = createScaffolder(new URL('../scaffold/', import.meta.url))
 
   constructor(ctx: Context) {
@@ -43,10 +47,16 @@ export default class AppStudio extends TypertRemoteService {
     return this.runtimeView(await android.manager.status())
   }
 
-  /** Read the project currently deployed to the running Android runtime. */
+  /** Read or reconnect the project currently deployed to the running Android runtime. */
   @Remote
-  async projectStatus(): Promise<ProjectView> {
-    return this.projects.status(this.ctx.get('appStudioAndroid')?.manager)
+  async projectStatus(projectRoot: string): Promise<ProjectView> {
+    const android = this.ctx.get('appStudioAndroid')
+    const current = this.projects.status(android?.manager)
+    if (!android || current.framework || !android.manager.currentEndpoint() || this.agentBusy()) return current
+    const legacy = await this.legacyProject(projectRoot).catch(() => undefined)
+    if (this.agentBusy()) return this.projects.status(android.manager)
+    const signal = AbortSignal.any([this.lifetime.signal, android.lifetime.signal])
+    return this.projects.restore(android.manager, signal, legacy)
   }
 
   /** Read the most recent starter job for the project, including retained failures. */
@@ -108,11 +118,16 @@ export default class AppStudio extends TypertRemoteService {
     const project = this.projects.status(android.manager)
     const adapter = project.framework ? this.framework(project.framework) : undefined
     if (!adapter) throw new RemoteError('gateway/bad-request', 'Run a project with an enabled framework before submitting an iteration.', {})
-    return iteration.jobs.submit({ ...request, projectRoot }, {
-      project: this.projects, manager: android.manager, adapter,
-      signal: AbortSignal.any([this.lifetime.signal, android.lifetime.signal, iteration.signal, adapter.signal]),
-      submit: (input, signal) => iteration.sessions.submit(input, signal),
-    })
+    try {
+      return await iteration.jobs.submit({ ...request, projectRoot }, {
+        project: this.projects, manager: android.manager, adapter,
+        signal: AbortSignal.any([this.lifetime.signal, android.lifetime.signal, iteration.signal, adapter.signal]),
+        submit: (input, signal) => iteration.sessions.submit(input, signal),
+      })
+    } catch (error) {
+      if (IterationAdmissionError.is(error)) throw new RemoteError('gateway/bad-request', error.message, {})
+      throw error
+    }
   }
 
   /** Build, deploy and launch an Android project in the dedicated runtime. */
@@ -133,12 +148,22 @@ export default class AppStudio extends TypertRemoteService {
     return this.runtimeView(await this.android.manager.prepare(licenseAccepted))
   }
 
-  /** Start the existing Live and Candidate Android devices. */
+  /** Start both Android devices without requiring a preview-ready signal. */
   @Remote
   async start(): Promise<RuntimeView> {
+    return this.startRuntime(false)
+  }
+
+  /** Start the current device and wait for the first interactive preview before starting the other one. */
+  @Remote
+  async startPreview(): Promise<RuntimeView> {
+    return this.startRuntime(true)
+  }
+
+  private async startRuntime(deferBackground: boolean): Promise<RuntimeView> {
     const manager = this.android.manager
     try {
-      await manager.start()
+      await manager.start({ deferBackground })
     } catch (error) {
       const status = await manager.status()
       if (status.phase === 'error') return this.runtimeView(status)
@@ -172,7 +197,9 @@ export default class AppStudio extends TypertRemoteService {
   @Remote({ mode: 'stream' })
   async *holdRuntime(signal: AbortSignal): RemoteStream<boolean> {
     const android = this.android
-    const lifetime = AbortSignal.any([signal, this.lifetime.signal, android.lifetime.signal])
+    const endpoint = android.manager.currentEndpoint()
+    if (!endpoint) throw new RemoteError('gateway/bad-request', 'Start the Android Runtime before connecting Live.', {})
+    const lifetime = AbortSignal.any([signal, this.lifetime.signal, android.lifetime.signal, android.manager.endpointSignal(endpoint)])
     lifetime.throwIfAborted()
     const release = android.manager.acquireUse()
     let close = () => {}
@@ -198,7 +225,14 @@ export default class AppStudio extends TypertRemoteService {
     if (!endpoint || !device) throw new RemoteError('gateway/bad-request', 'Android device is not running.', {})
     const invocation = this.ctx.invocation
     if (!invocation) throw new RemoteError('gateway/internal', 'Android signaling requires a DSH connection.', {})
-    yield* relaySignaling(endpoint, device, invocation.uplink<string>(), AbortSignal.any([signal, this.lifetime.signal, android.lifetime.signal]))
+    const lifetime = AbortSignal.any([signal, this.lifetime.signal, android.lifetime.signal, android.manager.endpointSignal(endpoint)])
+    lifetime.throwIfAborted()
+    const release = android.manager.acquireUse()
+    try {
+      yield* relaySignaling(endpoint, device, invocation.uplink<string>(), lifetime)
+    } finally {
+      release()
+    }
   }
 
   private get android() {
@@ -211,7 +245,7 @@ export default class AppStudio extends TypertRemoteService {
   private runtimeView(status: RuntimeStatus): RuntimeView {
     const commentingEnabled = this.ctx.get('appStudioCommenting') === true
     return {
-      ...status, androidEnabled: true, frameworks: frameworks.filter((id) => this.framework(id)),
+      ...status, androidEnabled: true, supportsForegroundStart: true, frameworks: frameworks.filter((id) => this.framework(id)),
       commentingEnabled, iterationEnabled: commentingEnabled && this.iterationFeature !== undefined,
       layoutEnabled: !!this.agentFeature && !!this.starter('layout'),
       promptEnabled: !!this.agentFeature && !!this.starter('prompt'),
@@ -226,6 +260,16 @@ export default class AppStudio extends TypertRemoteService {
 
   private framework(id: FrameworkId) {
     return this.ctx.get(frameworkService[id])
+  }
+
+  private async legacyProject(projectRoot: string): Promise<ProjectView | undefined> {
+    const feature = this.agentFeature
+    if (!feature || !projectRoot) return undefined
+    const root = await projectDirectory(projectRoot)
+    const iteration = await feature.jobs.status(root)
+    const job = iteration ?? await feature.generation.status(root)
+    const project = job?.phase === 'applied' ? job.project : undefined
+    return project?.framework && project.projectRoot.toLowerCase() === root.toLowerCase() ? project : undefined
   }
 
   private async *executeProject(config: ProjectRunConfig, rebuild: boolean, signal: AbortSignal): AsyncIterable<ProjectRunEvent> {

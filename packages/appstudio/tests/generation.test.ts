@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import test, { type TestContext } from 'node:test'
 import type { GenerationExecution } from '../src/generation/contract.ts'
 import { GenerationJobs } from '../src/generation/jobs.ts'
+import { generationPrompt } from '../src/generation/prompt.ts'
 import { createScaffolder } from '../src/generation/scaffold.ts'
 import { CandidateFiles } from '../src/iteration/candidate-tools.ts'
 import type { GenerationRequest, ProjectRunEvent } from '../src/shared/protocol.ts'
@@ -94,7 +95,10 @@ test('retains the failed candidate and original layout for repair in the same se
   const { dataDir, request: empty, projectRoot } = await fixture(t)
   const request: GenerationRequest = {
     ...empty, mode: 'layout', brief: '',
-    layout: { screens: [{ id: 'home', title: 'Home', blocks: [{ id: 'notes', kind: 'list', text: 'Notes' }] }] },
+    layout: { screens: [{ id: 'home', title: 'Home', blocks: [
+      { id: 'notes', kind: 'list', text: 'Notes', position: { row: 0, column: 0, span: 8 } },
+      { id: 'add', kind: 'button', text: 'New', position: { row: 0, column: 8, span: 4 } },
+    ] }] },
   }
   const first = new GenerationJobs(dataDir)
   let previousRoot = ''
@@ -114,7 +118,9 @@ test('retains the failed candidate and original layout for repair in the same se
     },
   }))
   await first.drain()
-  assert.equal((await first.status(projectRoot))?.phase, 'failed')
+  const failed = await first.status(projectRoot)
+  assert.equal(failed?.phase, 'failed')
+  assert.equal(failed.canRetryBuild, false)
   assert.deepEqual(await readdir(projectRoot), ['.git'])
 
   const retry = new GenerationJobs(dataDir)
@@ -124,6 +130,7 @@ test('retains the failed candidate and original layout for repair in the same se
       assert.equal(retry.candidateFor(session.id)?.root, previousRoot)
       assert.equal(input.brief.name, request.name)
       assert.deepEqual(input.brief.layout, request.layout)
+      assert.match(generationPrompt(input), /Blocks sharing a row belong side by side/)
       assert.equal(input.repairNote, 'Repair build')
       assert.match(input.previousLog, /APK build diagnostic/)
       const files = new CandidateFiles(projectRoot, () => retry.candidateFor(session.id))
@@ -136,6 +143,76 @@ test('retains the failed candidate and original layout for repair in the same se
   assert.equal(repaired?.phase, 'applied', repaired?.log)
   assert.equal(repaired.sessionId, session.id)
 })
+
+test('rejects overlapping or overflowing layout blocks before creating a DSH session', async t => {
+  const { dataDir, request, projectRoot } = await fixture(t)
+  const jobs = new GenerationJobs(dataDir)
+  for (const column of [4, 11]) {
+    await assert.rejects(jobs.submit({
+      ...request, mode: 'layout', brief: '', layout: { screens: [{ id: 'home', title: 'Home', blocks: [
+        { id: 'notes', kind: 'list', text: 'Notes', position: { row: 0, column: 0, span: 8 } },
+        { id: 'add', kind: 'button', text: 'New', position: { row: 0, column, span: 4 } },
+      ] }] },
+    }, execution()), /inside the screen grid without overlapping/)
+  }
+  assert.equal(await jobs.status(projectRoot), null)
+})
+
+for (const legacy of [false, true]) {
+  test(`retries Android runtime startup with the retained source${legacy ? ' from a legacy job' : ''}`, async t => {
+    const { dataDir, request: empty, projectRoot } = await fixture(t)
+    const request: GenerationRequest = legacy ? {
+      ...empty, mode: 'layout', brief: '', layout: { screens: [{ id: 'home', title: 'Home', blocks: [
+        { id: 'notes', kind: 'list', text: 'Notes' },
+      ] }] },
+    } : empty
+    const first = new GenerationJobs(dataDir)
+    let entry = ''
+    const failedProject = {
+      isBusy: () => false,
+      async *execute(): AsyncIterable<ProjectRunEvent> {
+        yield { kind: 'progress', text: 'Starting the dedicated Android runtime.', stage: 'runtime-start' }
+        assert.equal((await first.status(projectRoot))?.phase, 'starting')
+        yield { kind: 'error', text: 'Could not create the live Android virtual device.', stage: 'runtime-start' }
+      },
+    } as GenerationExecution['project']
+    await first.submit(request, execution({
+      project: failedProject,
+      async generate(input, signal) {
+        const lease = first.candidateFor(session.id)!
+        entry = input.editScope.entry
+        const files = new CandidateFiles(projectRoot, () => first.candidateFor(session.id))
+        const before = await readFile(join(lease.root, entry), 'utf8')
+        await files.edit(entry, before, before + '\n// Generated notes app\n', signal)
+        return { turn: 1 }
+      },
+    }))
+    await first.drain()
+    assert.deepEqual(await readdir(projectRoot), ['.git'])
+
+    if (legacy) {
+      const [directory] = await readdir(dataDir)
+      const statePath = join(dataDir, directory, request.batchId, 'state.json')
+      const state = JSON.parse(await readFile(statePath, 'utf8'))
+      delete state.generatedFiles
+      delete state.view.canRetryBuild
+      await writeFile(statePath, JSON.stringify(state))
+    }
+    const retry = new GenerationJobs(dataDir)
+    const failed = await retry.status(projectRoot)
+    assert.equal(failed?.phase, 'failed')
+    assert.equal(failed.canRetryBuild, true)
+    // A second click on Generate and run from an older Client still uses the retained job.
+    await retry.submit({ ...request, batchId: randomUUID() }, execution({
+      createSession: async () => { throw new Error('Retry unexpectedly created another DSH session.') },
+    }))
+    await retry.drain()
+    const applied = await retry.status(projectRoot)
+    assert.equal(applied?.phase, 'applied', applied?.log)
+    assert.equal(applied.sessionId, session.id)
+    assert.match(await readFile(join(projectRoot, entry), 'utf8'), /Generated notes app/)
+  })
+}
 
 test('rejects nonempty workspaces and refuses to build a modified trusted scene bridge', async t => {
   const { dataDir, request, projectRoot } = await fixture(t)

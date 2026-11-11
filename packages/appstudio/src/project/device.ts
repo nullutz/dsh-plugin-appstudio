@@ -17,7 +17,7 @@ const deployment = z.object({
 })
 
 async function deviceRequest<T>(
-  endpoint: RuntimeEndpoint, role: DeviceRole, action: 'capture' | 'deploy',
+  endpoint: RuntimeEndpoint, role: DeviceRole, action: 'capture' | 'deploy' | 'resume',
   body: object, parser: z.ZodType<T>, signal: AbortSignal,
 ): Promise<T> {
   const url = new URL(`/v1/devices/${role}/${action}`, endpoint.gatewayUrl)
@@ -54,6 +54,14 @@ async function deviceRequest<T>(
 
 export function captureScene(endpoint: RuntimeEndpoint, role: DeviceRole, applicationId: string, signal: AbortSignal): Promise<Checkpoint> {
   return deviceRequest(endpoint, role, 'capture', { applicationId }, checkpoint, signal)
+}
+
+export async function resumeProject(
+  endpoint: RuntimeEndpoint, role: DeviceRole, applicationId: string, versionCode: string, signal: AbortSignal,
+): Promise<Checkpoint> {
+  const result = await deviceRequest(endpoint, role, 'resume', { applicationId, versionCode }, checkpoint, signal)
+  if (result.versionCode !== versionCode) throw new Error('The resumed Android app did not verify the expected version.')
+  return result
 }
 
 export async function deployProject(

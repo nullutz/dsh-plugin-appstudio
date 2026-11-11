@@ -30,12 +30,15 @@ const tools = `${root}/build-tools`
 const java = '/usr/lib/jvm/java-21-openjdk-amd64'
 const buildTimeout = 30 * 60_000
 const inspectTimeout = 30_000
+const gradleWorkers = 3
 const environment = [
   `PATH=${tools}/node/bin:${java}/bin:/usr/local/bin:/usr/bin:/bin`,
   `JAVA_HOME=${java}`,
   `ANDROID_HOME=${sdk}`,
   `ANDROID_SDK_ROOT=${sdk}`,
   `GRADLE_USER_HOME=${tools}/cache/gradle`,
+  // Flutter launches Gradle itself. A single-use daemon inherits the build's priority.
+  `GRADLE_OPTS=-Dorg.gradle.daemon=false -Dorg.gradle.workers.max=${gradleWorkers}`,
   `PUB_CACHE=${tools}/cache/pub`,
   `npm_config_cache=${tools}/cache/npm`,
   'GIT_CONFIG_COUNT=1',
@@ -45,7 +48,7 @@ const environment = [
   'FLUTTER_SUPPRESS_ANALYTICS=true',
 ]
 
-const gradleDebug = [':app:assembleDebug', '--console=plain', '--no-daemon', '--max-workers=3']
+const gradleDebug = [':app:assembleDebug', '--console=plain', '--no-daemon', `--max-workers=${gradleWorkers}`]
 const gradleApk = 'app/build/outputs/apk/debug/app-debug.apk'
 
 function parseBadging(badging: string): Omit<AndroidArtifact, 'apkPath'> {
@@ -97,6 +100,10 @@ export async function buildAndroidProject(run: AndroidBuildRun, request: Android
     return result.stdout
   }
 
+  function runBuildTask(cwd: string, argv: readonly string[], label: string): Promise<string> {
+    return execute(cwd, ['/usr/bin/nice', '-n', '10', ...argv], label, buildTimeout, true)
+  }
+
   async function normalizeGradleWrapper(cwd: string, wrapper: string, optional = false): Promise<void> {
     if (optional) {
       const result = await run(['/usr/bin/env', '--chdir', cwd, '/usr/bin/test', '-f', wrapper], {
@@ -114,24 +121,24 @@ export async function buildAndroidProject(run: AndroidBuildRun, request: Android
   switch (framework) {
     case 'flutter':
       await normalizeGradleWrapper(projectDir, './android/gradlew', true)
-      await execute(projectDir, [`${tools}/flutter/bin/flutter`, 'build', 'apk', '--debug',
-        '--target-platform', 'android-x64'], 'Flutter Android build', buildTimeout, true)
+      await runBuildTask(projectDir, [`${tools}/flutter/bin/flutter`, 'build', 'apk', '--debug',
+        '--target-platform', 'android-x64'], 'Flutter Android build')
       output = 'build/app/outputs/flutter-apk/app-debug.apk'
       break
     case 'react-native': {
       await execute(projectDir, ['/usr/bin/test', '-f', 'package-lock.json'], 'React Native npm lockfile check', inspectTimeout)
-      await execute(projectDir, [`${tools}/node/bin/npm`, 'ci', '--no-audit', '--no-fund', '--prefer-offline'],
-        'React Native dependency install', buildTimeout, true)
+      await runBuildTask(projectDir, [`${tools}/node/bin/npm`, 'ci', '--no-audit', '--no-fund', '--prefer-offline'],
+        'React Native dependency install')
       const androidDir = posix.join(projectDir, 'android')
       await normalizeGradleWrapper(androidDir, './gradlew')
-      await execute(androidDir, ['/bin/bash', './gradlew', ...gradleDebug, '-PreactNativeArchitectures=x86_64',
-        '--init-script', `${root}/runtime/react-native.init.gradle`], 'React Native Android build', buildTimeout, true)
+      await runBuildTask(androidDir, ['/bin/bash', './gradlew', ...gradleDebug, '-PreactNativeArchitectures=x86_64',
+        '--init-script', `${root}/runtime/react-native.init.gradle`], 'React Native Android build')
       output = 'android/' + gradleApk
       break
     }
     case 'android':
       await normalizeGradleWrapper(projectDir, './gradlew')
-      await execute(projectDir, ['/bin/bash', './gradlew', ...gradleDebug], 'Native Android build', buildTimeout, true)
+      await runBuildTask(projectDir, ['/bin/bash', './gradlew', ...gradleDebug], 'Native Android build')
       output = gradleApk
       break
     default:

@@ -4,7 +4,7 @@ import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { IterationComment, IterationRequest, IterationSession, IterationView } from '../shared/protocol.ts'
 import type { CapturedComment } from './annotations.ts'
 import type { namespace } from './copy.ts'
-import { projectDrafts, readPendingBatch, writePendingBatch, type PendingBatch } from './iteration-drafts.ts'
+import { nextDrafts, pendingRequest, projectDrafts, readPendingBatch, writePendingBatch, type PendingBatch } from './iteration-drafts.ts'
 
 export interface IterationRemote {
   listIterationSessions(projectRoot: string): Promise<RemoteResult<IterationSession[]>>
@@ -28,6 +28,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function unfinished(view: IterationView | null | undefined): boolean {
+  return !!view && view.phase !== 'applied' && view.phase !== 'failed'
+}
+
 export function useIteration(remote: IterationRemote, projectRoot: string, commentingEnabled: boolean, iterationEnabled: boolean) {
   const [drafts, setDrafts] = useState<ForProject<IterationComment[]>>()
   const [capture, setCapture] = useState<ForProject<CapturedComment>>()
@@ -40,33 +44,47 @@ export function useIteration(remote: IterationRemote, projectRoot: string, comme
   const [sessionBusy, setSessionBusy] = useState(false)
   const [draftBusy, setDraftBusy] = useState(false)
   const [sending, setSending] = useState(false)
+  const [receipt, setReceipt] = useState<ForProject<PendingBatch | undefined>>()
   const root = useRef(projectRoot)
+  const observed = useRef<ForProject<IterationView | null>>()
   const statusFence = useRef(0)
   const sendInFlight = useRef(false)
+  const draftInFlight = useRef(false)
   const pendingBatch = useRef(new Map<string, PendingBatch>())
   const clearingBatch = useRef(new Set<string>())
 
   useLayoutEffect(() => { root.current = projectRoot }, [projectRoot])
 
+  const pendingFor = useCallback((path: string) => pendingBatch.current.get(path) ?? readPendingBatch(path), [])
+  const recordPending = useCallback((path: string, value: PendingBatch | undefined) => {
+    if (value) pendingBatch.current.set(path, value)
+    else pendingBatch.current.delete(path)
+    writePendingBatch(path, value)
+    if (root.current === path) setReceipt({ root: path, value })
+  }, [])
+
   const adopt = useCallback((path: string, value: IterationView | null) => {
-    if (root.current === path) setLatest({ root: path, value })
-    const pending = pendingBatch.current.get(path) ?? readPendingBatch(path)
+    if (root.current === path) {
+      observed.current = { root: path, value }
+      setLatest(observed.current)
+    }
+    const pending = pendingFor(path)
     if (!value || !pending || pending.batchId !== value.batchId || clearingBatch.current.has(value.batchId)) return
     clearingBatch.current.add(value.batchId)
-    const ids = new Set(pending.commentIds)
-    void (ids.size ? projectDrafts(path, comments => comments.filter(comment => !ids.has(comment.id))) : Promise.resolve(undefined))
+    if (root.current === path) setError(undefined)
+    void (pending.commentIds.length ? projectDrafts(path, comments => nextDrafts(comments, pending)) : Promise.resolve(undefined))
       .then(comments => {
-        if ((pendingBatch.current.get(path) ?? readPendingBatch(path))?.batchId === value.batchId) {
-          pendingBatch.current.delete(path)
-          writePendingBatch(path, undefined)
+        if (root.current === path && comments) {
+          setDrafts({ root: path, value: comments })
+          setDraftError(undefined)
         }
-        if (root.current === path && comments) setDrafts({ root: path, value: comments })
+        if (pendingFor(path)?.batchId === value.batchId) recordPending(path, undefined)
       })
       .catch(() => {
         if (root.current === path) setDraftError({ root: path, value: true })
       })
       .finally(() => clearingBatch.current.delete(value.batchId))
-  }, [])
+  }, [pendingFor, recordPending])
 
   useEffect(() => {
     if (!projectRoot || (!commentingEnabled && !iterationEnabled)) return
@@ -117,17 +135,20 @@ export function useIteration(remote: IterationRemote, projectRoot: string, comme
     return () => { disposed = true }
   }, [iterationEnabled, projectRoot, remote])
 
-  const comments = drafts?.root === projectRoot ? drafts.value : noComments
+  const draftItems = drafts?.root === projectRoot ? drafts.value : noComments
+  const pending = receipt?.root === projectRoot ? receipt.value : pendingFor(projectRoot)
+  const comments = nextDrafts(draftItems, pending)
   const captured = capture?.root === projectRoot ? capture.value : undefined
   const sessions = recent?.root === projectRoot ? recent.value : noSessions
   const view = latest?.root === projectRoot ? latest.value : undefined
-  const active = !!view && view.phase !== 'applied' && view.phase !== 'failed'
+  const active = unfinished(view)
   const sessionId = (selected?.root === projectRoot && sessions.some(session => session.id === selected.value)
     ? selected.value
     : sessions[0]?.id) ?? ''
 
   async function changeDrafts(update: (items: IterationComment[]) => IterationComment[]): Promise<boolean> {
-    if (draftBusy || !projectRoot) return false
+    if (draftInFlight.current || !projectRoot) return false
+    draftInFlight.current = true
     setDraftBusy(true)
     try {
       const value = await projectDrafts(projectRoot, update)
@@ -140,6 +161,7 @@ export function useIteration(remote: IterationRemote, projectRoot: string, comme
       if (root.current === projectRoot) setDraftError({ root: projectRoot, value: true })
       return false
     } finally {
+      draftInFlight.current = false
       setDraftBusy(false)
     }
   }
@@ -149,7 +171,7 @@ export function useIteration(remote: IterationRemote, projectRoot: string, comme
     if (!captured || !note || note.length > maxText || comments.length >= maxComments) return false
     const comment = { ...captured, id: crypto.randomUUID(), text: note }
     const saved = await changeDrafts(items => {
-      if (items.length >= maxComments) throw new Error('Comment limit reached.')
+      if (nextDrafts(items, pendingFor(projectRoot)).length >= maxComments) throw new Error('Comment limit reached.')
       return [...items, comment]
     })
     if (saved) setCapture(previous => previous?.root === projectRoot && previous.value === captured ? undefined : previous)
@@ -175,29 +197,25 @@ export function useIteration(remote: IterationRemote, projectRoot: string, comme
     }
   }
 
-  async function submit(retry: boolean, note: string): Promise<void> {
-    if (!projectRoot || !iterationEnabled || active || sendInFlight.current) return
-    const session = retry ? view?.sessionId : sessionId
-    if (!session || (retry ? view?.phase !== 'failed' : !comments.length)) return
-    const submitted = retry ? noComments : comments
-    const commentIds = submitted.map(comment => comment.id)
-    const retryOf = retry ? view?.batchId ?? null : null
-    const repairNote = retry ? note.trim() : ''
-    const previous = pendingBatch.current.get(projectRoot) ?? readPendingBatch(projectRoot)
-    const matches = previous?.sessionId === session && previous.retryOf === retryOf &&
-      previous.repairNote === repairNote && JSON.stringify(previous.commentIds) === JSON.stringify(commentIds)
-    const batchId = matches ? previous.batchId : crypto.randomUUID()
-    const pending = { batchId, sessionId: session, commentIds, retryOf, repairNote }
-    pendingBatch.current.set(projectRoot, pending)
-    writePendingBatch(projectRoot, pending)
+  function maySend(): boolean {
+    return !!projectRoot && root.current === projectRoot && iterationEnabled && drafts?.root === projectRoot && !unfinished(currentView()) &&
+      !sendInFlight.current && !draftInFlight.current
+  }
+
+  function currentView(): IterationView | null | undefined {
+    return observed.current?.root === projectRoot ? observed.current.value : view
+  }
+
+  async function send(batch: PendingBatch, request: IterationRequest): Promise<void> {
     sendInFlight.current = true
+    recordPending(projectRoot, batch)
     statusFence.current++
     setSending(true)
     setError(undefined)
     try {
-      adopt(projectRoot, unwrap(await remote.submitIteration({
-        projectRoot, sessionId: session, batchId, comments: submitted, retryOf, repairNote,
-      })))
+      const result = await remote.submitIteration(request)
+      if (!result.ok && result.error.code === 'gateway/bad-request') recordPending(projectRoot, undefined)
+      adopt(projectRoot, unwrap(result))
     } catch (cause) {
       if (root.current === projectRoot) setError({ root: projectRoot, value: errorMessage(cause) })
     } finally {
@@ -206,8 +224,35 @@ export function useIteration(remote: IterationRemote, projectRoot: string, comme
     }
   }
 
+  async function submit(retry: boolean, note: string): Promise<void> {
+    if (!maySend() || pendingFor(projectRoot)) return
+    const previous = currentView()
+    const session = retry ? previous?.sessionId : sessionId
+    if (!session || (retry ? previous?.phase !== 'failed' : !comments.length)) return
+    const batch: PendingBatch = {
+      batchId: crypto.randomUUID(), sessionId: session,
+      commentIds: retry ? [] : comments.slice(0, maxComments).map(comment => comment.id),
+      retryOf: retry ? previous?.batchId ?? null : null, repairNote: retry ? note.trim() : '',
+    }
+    const request = pendingRequest(projectRoot, batch, draftItems)
+    if (request) await send(batch, request)
+  }
+
+  async function retrySubmission(): Promise<void> {
+    if (!maySend()) return
+    const batch = pendingFor(projectRoot)
+    if (!batch || batch.batchId === currentView()?.batchId) return
+    const request = pendingRequest(projectRoot, batch, draftItems)
+    if (request) await send(batch, request)
+    else {
+      recordPending(projectRoot, undefined)
+      setDraftError({ root: projectRoot, value: true })
+    }
+  }
+
   return {
-    comments, captured, sessions, sessionId, view, active, sending, draftBusy, sessionBusy,
+    comments, captured, sessions, sessionId, view, active, sending, draftBusy, sessionBusy, pending: !!pending,
+    retryableSubmission: !!pending && pending.batchId !== view?.batchId,
     error: error?.root === projectRoot ? error.value : undefined,
     statusError: statusError?.root === projectRoot ? statusError.value : undefined,
     draftError: draftError?.root === projectRoot && draftError.value,
@@ -215,10 +260,11 @@ export function useIteration(remote: IterationRemote, projectRoot: string, comme
     capture: (value: CapturedComment) => setCapture({ root: projectRoot, value }),
     discard: () => setCapture(undefined),
     saveComment,
-    removeComment: (id: string) => changeDrafts(items => items.filter(comment => comment.id !== id)),
+    removeComment: (id: string) => changeDrafts(items => pendingFor(projectRoot)?.commentIds.includes(id)
+      ? items : items.filter(comment => comment.id !== id)),
     selectSession: (id: string) => setSelected({ root: projectRoot, value: id }),
     createSession,
-    submit,
+    submit, retrySubmission,
   }
 }
 
@@ -256,7 +302,9 @@ export function IterationPanel({ state, commentingEnabled, iterationEnabled, liv
   const [repairNote, setRepairNote] = useState('')
   const { comments, captured, view } = state
   const busy = state.active || state.sending
-  const maySubmit = canSubmit && !busy && !state.draftBusy
+  const maySend = canSubmit && !busy && !state.draftBusy && state.draftsReady
+  const maySubmit = maySend && !state.pending
+  const mayRepair = maySubmit && (!view?.canRetryBuild || !!repairNote.trim())
   const assigned = state.sessions.find(session => session.id === view?.sessionId)
   const detail = view?.phase === 'applied' ? t(
     liveStatus === 'ready' ? 'iterationLiveReady' : liveStatus === 'waiting' ? 'iterationLiveWaiting' : 'iterationAppliedSaved',
@@ -305,7 +353,7 @@ export function IterationPanel({ state, commentingEnabled, iterationEnabled, liv
           ))}
         </ul>
       )}
-      {commentingEnabled && comments.length >= maxComments && <p>{t('commentLimit')}</p>}
+      {commentingEnabled && comments.length >= maxComments && <p>{t(comments.length > maxComments ? 'commentOverflow' : 'commentLimit')}</p>}
       {iterationEnabled && (
         <div className="appstudio-actions">
           <label>
@@ -322,6 +370,9 @@ export function IterationPanel({ state, commentingEnabled, iterationEnabled, liv
           <button type="button" data-appstudio-submit-iteration="" disabled={!maySubmit || !state.sessionId || !comments.length} onClick={() => void state.submit(false, '')}>
             {t('iterationSubmit')}
           </button>
+          {state.retryableSubmission && !busy && (
+            <button type="button" disabled={!maySend} onClick={() => void state.retrySubmission()}>{t('iterationRetrySubmission')}</button>
+          )}
         </div>
       )}
       {state.sending && <p role="status">{t('working')}</p>}
@@ -334,13 +385,20 @@ export function IterationPanel({ state, commentingEnabled, iterationEnabled, liv
           {view.phase === 'failed' && iterationEnabled && (
             <form className="appstudio-comment-composer" onSubmit={event => {
               event.preventDefault()
-              if (maySubmit) void state.submit(true, repairNote)
+              if (mayRepair) void state.submit(true, repairNote)
             }}>
               <label>
-                {t('iterationRepairNote')}
+                {t(view.canRetryBuild ? 'iterationRepairNoteRequired' : 'iterationRepairNote')}
                 <textarea value={repairNote} maxLength={maxText} onChange={event => setRepairNote(event.target.value)} />
               </label>
-              <div><button type="submit" data-appstudio-retry-iteration="" disabled={!maySubmit}>{t('iterationRetry')}</button></div>
+              <div className="appstudio-actions">
+                {view.canRetryBuild && (
+                  <button type="button" data-appstudio-retry-build="" disabled={!maySubmit} onClick={() => void state.submit(true, '')}>
+                    {t('iterationRetryBuild')}
+                  </button>
+                )}
+                <button type="submit" data-appstudio-retry-iteration="" disabled={!mayRepair}>{t('iterationRetry')}</button>
+              </div>
             </form>
           )}
           {!!view.outcomes.length && (

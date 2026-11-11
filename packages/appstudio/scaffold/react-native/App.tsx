@@ -13,7 +13,8 @@ import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 import {AppStudioScene} from './src/app-studio-scene';
 
 type Block = {id: string; kind: 'heading' | 'text' | 'image' | 'input' | 'button' | 'list' | 'divider'; text: string};
-type Screen = {id: string; title: string; blocks: Block[]};
+type LayoutRow = {spaceBefore: number; cells: {span: number; block?: Block}[]};
+type Screen = {id: string; title: string; rows: LayoutRow[]};
 type Scene = {screen: string; drafts: Record<string, string>; selections: Record<string, number>; offsets: Record<string, number>};
 
 const title = __TITLE_JS__;
@@ -129,6 +130,32 @@ function ScreenContent({screen, scene, offset, onOffset, onDraft, onSelect, onAc
     }
   }
 
+  function renderBlock(block: Block) {
+    const key = screen.id + ':' + block.id;
+    const label = block.text;
+    switch (block.kind) {
+      case 'heading': return <Text style={styles.heading}>{label}</Text>;
+      case 'text': return <Text style={styles.body}>{label}</Text>;
+      case 'divider': return <View style={styles.divider} />;
+      case 'image': return <View accessible accessibilityRole="image" accessibilityLabel={label} style={styles.image}>
+        <Text numberOfLines={4} style={[styles.tabText, styles.imageLabel]}>{label}</Text>
+      </View>;
+      case 'input': return <TextInput accessibilityLabel={label} placeholder={label} placeholderTextColor="#59617c"
+        value={scene.drafts[key] ?? ''} onChangeText={value => onDraft(key, value)} style={styles.input} />;
+      case 'button': return <Pressable accessibilityRole="button" style={styles.action} onPress={() => onAction(label)}>
+        <Text style={styles.actionText}>{label}</Text>
+      </Pressable>;
+      case 'list': return <View>
+        {label.split(/\r?\n/).map((item, index) => (
+          <Pressable key={index} accessibilityRole="button" accessibilityState={{selected: scene.selections[key] === index}}
+            style={[styles.row, scene.selections[key] === index && styles.activeTab]} onPress={() => onSelect(key, index)}>
+            <Text style={styles.body}>{item}</Text>
+          </Pressable>
+        ))}
+      </View>;
+    }
+  }
+
   return (
     <ScrollView ref={scroll} accessibilityLabel="App content" keyboardShouldPersistTaps="handled"
       contentContainerStyle={styles.content} scrollEventThrottle={16}
@@ -143,29 +170,16 @@ function ScreenContent({screen, scene, offset, onOffset, onDraft, onSelect, onAc
         onOffset(actual, target !== null);
       }}>
       <Text accessibilityRole="header" style={styles.screenTitle}>{screen.title}</Text>
-      {screen.blocks.map(block => {
-        const key = screen.id + ':' + block.id;
-        const label = block.text;
-        switch (block.kind) {
-          case 'heading': return <Text key={key} style={styles.heading}>{label}</Text>;
-          case 'text': return <Text key={key} style={styles.body}>{label}</Text>;
-          case 'divider': return <View key={key} style={styles.divider} />;
-          case 'image': return <View key={key} accessible accessibilityRole="image" style={styles.image}><Text style={styles.tabText}>{label}</Text></View>;
-          case 'input': return <TextInput key={key} accessibilityLabel={label} placeholder={label} placeholderTextColor="#59617c"
-            value={scene.drafts[key] ?? ''} onChangeText={value => onDraft(key, value)} style={styles.input} />;
-          case 'button': return <Pressable key={key} accessibilityRole="button" style={styles.action} onPress={() => onAction(label)}>
-            <Text style={styles.actionText}>{label}</Text>
-          </Pressable>;
-          case 'list': return <View key={key}>
-            {label.split(/\r?\n/).map((item, index) => (
-              <Pressable key={index} accessibilityRole="button" accessibilityState={{selected: scene.selections[key] === index}}
-                style={[styles.row, scene.selections[key] === index && styles.activeTab]} onPress={() => onSelect(key, index)}>
-                <Text style={styles.body}>{item}</Text>
-              </Pressable>
-            ))}
-          </View>;
-        }
-      })}
+      {screen.rows.map((row, rowIndex) => (
+        <View key={rowIndex} style={[styles.layoutRow, {marginTop: row.spaceBefore}]}>
+          {row.cells.map((cell, column) => (
+            <View key={cell.block ? 'block:' + cell.block.id : 'space:' + column}
+              style={[styles.layoutTrack, {flexGrow: cell.span}]}>
+              {cell.block && <View style={row.cells.length > 1 && styles.layoutCell}>{renderBlock(cell.block)}</View>}
+            </View>
+          ))}
+        </View>
+      ))}
     </ScrollView>
   );
 }
@@ -178,12 +192,16 @@ const styles = StyleSheet.create({
   tab: {paddingHorizontal: 14, paddingVertical: 8, borderRadius: 18, backgroundColor: '#eef0fb'},
   activeTab: {backgroundColor: '#e0e2ff'},
   tabText: {fontWeight: '600', color: '#3831a0'},
-  content: {gap: 12, padding: 20},
+  content: {padding: 20},
+  layoutRow: {flexDirection: 'row', alignItems: 'flex-start'},
+  layoutTrack: {flexBasis: 0, minWidth: 0},
+  layoutCell: {paddingHorizontal: 4},
   screenTitle: {fontSize: 21, fontWeight: '700', color: '#1e243b'},
   heading: {fontSize: 24, fontWeight: '700', color: '#1e243b'},
   body: {fontSize: 16, color: '#1e243b'},
   divider: {height: 1, backgroundColor: '#dfe3f2'},
   image: {height: 126, alignItems: 'center', justifyContent: 'center', borderRadius: 20, backgroundColor: '#e5e7ff'},
+  imageLabel: {textAlign: 'center'},
   input: {minHeight: 52, paddingHorizontal: 12, borderColor: '#bbc2dc', borderWidth: 1, borderRadius: 10, color: '#1e243b'},
   action: {alignItems: 'center', borderRadius: 12, backgroundColor: '#4f46e5', padding: 14},
   actionText: {fontSize: 16, fontWeight: '700', color: 'white'},

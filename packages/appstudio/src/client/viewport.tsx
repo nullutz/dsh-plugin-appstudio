@@ -1,68 +1,18 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import type { DeviceRole, IterationSelection } from '../shared/protocol.ts'
+import type { AndroidDevice, DeviceRole, IterationSelection } from '../shared/protocol.ts'
 import { captureComment, locate, selectionBetween, videoGeometry, type CapturedComment, type DevicePoint } from './annotations.ts'
 import type { namespace } from './copy.ts'
-import { openPeer, type DeviceInput, type DevicePeer, type OpenSignaling, type PeerState } from './peer.ts'
-
-const roles = ['live', 'candidate'] as const
-const connecting: PeerState = { phase: 'connecting' }
-const retryDelays = [500, 1_500, 4_000]
-
-function useDevice(signaling: OpenSignaling, role: DeviceRole, generation: number) {
-  const video = useRef<HTMLVideoElement>(null)
-  const retained = useRef<HTMLCanvasElement>(null)
-  const peer = useRef<DevicePeer | null>(null)
-  const [snapshot, setSnapshot] = useState({ generation, state: connecting })
-  const [inputError, setInputError] = useState('')
-  const [attempt, setAttempt] = useState(0)
-
-  useEffect(() => {
-    const videoElement = video.current
-    const retainedFrame = retained.current
-    if (!videoElement || !retainedFrame) return
-    let retry: number | undefined
-    let failures = 0
-
-    function connect(video: HTMLVideoElement, canvas: HTMLCanvasElement): void {
-      setSnapshot({ generation, state: connecting })
-      setInputError('')
-      try {
-        peer.current = openPeer(signaling, role, video, canvas, update, setInputError)
-      } catch (error) {
-        update({ phase: 'disconnected', detail: error instanceof Error ? error.message : String(error) })
-      }
-    }
-
-    function update(next: PeerState): void {
-      setSnapshot({ generation, state: next })
-      if (next.phase === 'ready') failures = 0
-      if (next.phase !== 'disconnected' || !videoElement || !retainedFrame) return
-      const delay = retryDelays[failures++]
-      if (delay !== undefined) retry = window.setTimeout(() => connect(videoElement, retainedFrame), delay)
-    }
-
-    connect(videoElement, retainedFrame)
-    return () => {
-      window.clearTimeout(retry)
-      peer.current?.close()
-      peer.current = null
-    }
-  }, [signaling, role, generation, attempt])
-
-  const state = snapshot.generation === generation ? snapshot.state : connecting
-  return { video, retained, peer, generation, state, inputError, reconnect: () => setAttempt(value => value + 1) }
-}
-
-export type ReadyPreview = { role: DeviceRole; deploymentId?: string }
+import { StudioIcon } from './icons.tsx'
+import type { DeviceInput } from './peer.ts'
+import { previewRoles, type PreviewSession } from './preview.ts'
 
 type ViewportProps = PropsLocale<typeof namespace> & {
-  signaling: OpenSignaling
-  targetRole?: DeviceRole
-  targetDeployment?: string
+  heading?: ReactNode
+  preview: PreviewSession
+  availableDevices: readonly AndroidDevice[]
+  backgroundFailed: boolean
   managed: boolean
-  onSelectedRole: (role: DeviceRole) => void
-  onReady?: (preview: ReadyPreview | undefined) => void
   commentingEnabled: boolean
   canAnnotate: boolean
   commentMode: boolean
@@ -81,14 +31,13 @@ type AnnotationGesture = {
 }
 
 export function Viewport({
-  signaling, t, targetRole, targetDeployment, managed, onSelectedRole, onReady,
+  heading, preview, availableDevices, backgroundFailed, t, managed,
   commentingEnabled, canAnnotate, commentMode, onToggleCommentMode, onCapture,
 }: ViewportProps) {
-  const [handoff, setHandoff] = useState({ role: targetRole, deployment: targetDeployment, generations: { live: 0, candidate: 0 } })
-  const live = useDevice(signaling, 'live', handoff.generations.live)
-  const candidate = useDevice(signaling, 'candidate', handoff.generations.candidate)
-  const devices = { live, candidate }
-  const [active, setActive] = useState<DeviceRole>(targetRole ?? 'live')
+  const { selectedRole: active, deployedRole, feeds: devices, handingOff } =
+    useSyncExternalStore(preview.subscribe, preview.getSnapshot)
+  const media = useRef<HTMLDivElement>(null)
+  const releaseOnDetach = useRef<() => void>(() => {})
   const screen = useRef<HTMLDivElement>(null)
   const pointer = useRef<{ id: number; last: Touch } | null>(null)
   const annotation = useRef<AnnotationGesture | null>(null)
@@ -97,13 +46,14 @@ export function Viewport({
   const keys = useRef(new Map<string, string>())
   const current = devices[active]
   const interactive = current.state.phase === 'ready'
-  const targetReady = interactive &&
-    (!targetRole || (active === targetRole && handoff.role === targetRole && handoff.deployment === targetDeployment))
 
-  useEffect(() => onSelectedRole(active), [active, onSelectedRole])
-  useEffect(() => {
-    onReady?.(targetReady ? { role: active, deploymentId: targetDeployment } : undefined)
-  }, [active, onReady, targetDeployment, targetReady])
+  releaseOnDetach.current = () => {
+    releaseInput()
+    clearAnnotation()
+  }
+  useLayoutEffect(() => {
+    if (media.current) return preview.attach(media.current, () => releaseOnDetach.current())
+  }, [preview])
 
   useEffect(() => {
     if (interactive) return
@@ -120,7 +70,7 @@ export function Viewport({
   }, [commentMode, canAnnotate])
 
   function send(input: DeviceInput): void {
-    if (interactive) current.peer.current?.send(input)
+    if (interactive) preview.send(active, input)
   }
 
   function releasePointer(): void {
@@ -145,27 +95,8 @@ export function Viewport({
     if (screen.current?.hasPointerCapture(drag.id)) screen.current.releasePointerCapture(drag.id)
   }
 
-  useLayoutEffect(() => {
-    if (handoff.role !== targetRole || handoff.deployment !== targetDeployment) {
-      // The previous target peer may have decoded a frame before this deployment.
-      if (targetRole === active && targetDeployment) {
-        releaseInput()
-        clearAnnotation()
-      }
-      const generations = targetRole && (targetRole !== active || targetDeployment)
-        ? { ...handoff.generations, [targetRole]: handoff.generations[targetRole] + 1 }
-        : handoff.generations
-      setHandoff({ role: targetRole, deployment: targetDeployment, generations })
-      return
-    }
-    if (!targetRole || targetRole === active || devices[targetRole].state.phase !== 'ready') return
-    releaseInput()
-    clearAnnotation()
-    setActive(targetRole)
-  })
-
   function pointerDown(event: PointerEvent<HTMLDivElement>): void {
-    const video = current.video.current
+    const video = preview.video(active)
     if (event.button !== 0 || pointer.current || annotation.current || !interactive || !video) return
     if (commentMode && !canAnnotate) return
     const point = locate(event.clientX, event.clientY, video, false)
@@ -189,7 +120,7 @@ export function Viewport({
   }
 
   function pointerMove(event: PointerEvent<HTMLDivElement>): void {
-    const video = current.video.current
+    const video = preview.video(active)
     if (!interactive || !video) return
     const selectionDrag = annotation.current
     if (selectionDrag?.id === event.pointerId) {
@@ -217,7 +148,7 @@ export function Viewport({
     if (annotation.current?.id === event.pointerId) {
       pointerMove(event)
       const selection = annotation.current?.selection
-      const video = current.video.current
+      const video = preview.video(active)
       clearAnnotation()
       if (!selection || !video || !interactive || !canAnnotate) return
       try {
@@ -263,56 +194,62 @@ export function Viewport({
 
   function select(role: DeviceRole): void {
     if (devices[role].state.phase !== 'ready') return
-    releaseInput()
-    setActive(role)
+    clearAnnotation()
+    if (role !== active && commentMode) onToggleCommentMode()
+    preview.select(role)
     screen.current?.focus()
   }
 
-  const geometry = overlay && current.video.current && videoGeometry(current.video.current)
+  const video = preview.video(active)
+  const geometry = overlay && video && videoGeometry(video)
 
   return (
     <section className="appstudio-devices" aria-label={t('subtitle')}>
-      <div className="appstudio-device-tabs">
-        {roles.map(role => {
-          const device = devices[role]
-          return (
-            <div key={role} className="appstudio-device-tab">
-              {managed
-                ? <strong>{t(active === role ? 'projectLiveDevice' : 'projectBackgroundDevice')}</strong>
-                : (
-                  <button
-                    type="button"
-                    data-appstudio-switch={role}
-                    aria-pressed={active === role}
-                    disabled={device.state.phase !== 'ready'}
-                    onClick={() => select(role)}
-                  >
-                    {t(role)}
+      <div className="appstudio-device-bar">
+        {heading}
+        <div className="appstudio-device-tabs">
+          {previewRoles.map(role => {
+            const device = devices[role]
+            const label = role === deployedRole ? 'projectLiveDevice' : 'projectBackgroundDevice'
+            const available = availableDevices.some(device => device.id === role)
+            const status = available ? device.state.phase : backgroundFailed ? 'projectDeviceFailed' : 'projectDeviceStarting'
+            return (
+              <div key={role} className="appstudio-device-tab" data-state={status}>
+                <button
+                  type="button"
+                  data-appstudio-switch={role}
+                  aria-pressed={active === role}
+                  disabled={!available || device.state.phase !== 'ready'}
+                  onClick={() => select(role)}
+                >
+                  {t(managed ? label : role)}
+                </button>
+                <span aria-live="polite">{t(status)}</span>
+                {available && device.state.phase === 'disconnected' && (
+                  <button type="button" onClick={() => {
+                    if (role === active) releaseInput()
+                    preview.reconnect(role)
+                  }}>
+                    {t('reconnect')}
                   </button>
                 )}
-              <span aria-live="polite">{t(device.state.phase)}</span>
-              {device.state.phase === 'disconnected' && (
-                <button type="button" onClick={() => {
-                  if (role === active) releaseInput()
-                  device.reconnect()
-                }}>
-                  {t('reconnect')}
-                </button>
-              )}
-            </div>
-          )
-        })}
-        {commentingEnabled && (
-          <button
-            type="button"
-            data-appstudio-comment-mode=""
-            aria-pressed={commentMode}
-            disabled={!commentMode && (!canAnnotate || !interactive)}
-            onClick={onToggleCommentMode}
-          >
-            {t(commentMode ? 'commentModeExit' : 'commentMode')}
-          </button>
-        )}
+              </div>
+            )
+          })}
+          {commentingEnabled && (
+            <button
+              type="button"
+              className="appstudio-comment-toggle"
+              data-appstudio-comment-mode=""
+              aria-pressed={commentMode}
+              disabled={!commentMode && (!canAnnotate || !interactive)}
+              onClick={onToggleCommentMode}
+            >
+              <StudioIcon name="comment" size={18} />
+              {t(commentMode ? 'commentModeExit' : 'commentMode')}
+            </button>
+          )}
+        </div>
       </div>
       <div
         className="appstudio-screen"
@@ -337,16 +274,7 @@ export function Viewport({
         onKeyDown={keyDown}
         onKeyUp={keyUp}
       >
-        {roles.map(role => {
-          const device = devices[role]
-          const show = active === role
-          return (
-            <div key={role} aria-hidden="true" className="appstudio-feed" data-selected={show} data-ready={device.state.phase === 'ready'}>
-              <canvas ref={device.retained} />
-              <video key={device.generation} ref={device.video} data-appstudio-device={role} autoPlay muted playsInline />
-            </div>
-          )
-        })}
+        <div className="appstudio-media" ref={media} />
         {overlay && geometry && (
           <span
             aria-hidden="true"
@@ -361,7 +289,7 @@ export function Viewport({
           />
         )}
       </div>
-      {targetRole && targetRole !== active && (
+      {handingOff && (
         <p className="appstudio-device-status" data-appstudio-handoff="waiting" role="status">{t('projectHandoffWaiting')}</p>
       )}
       <p className="appstudio-device-status" aria-live="polite">
