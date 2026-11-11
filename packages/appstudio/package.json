@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-appstudio",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Visual Android app workspace for DeepSeek Harness",
   "license": "MIT",
   "author": "nullutz",
@@ -12,7 +12,7 @@
   },
   "bugs": { "url": "https://github.com/nullutz/dsh-plugin-appstudio/issues" },
   "type": "module",
-  "engines": { "dsh": "0.2.2-rc.1" },
+  "engines": { "dsh": "0.2.2-alpha.3 || 0.2.2-rc.1" },
   "exports": {
     ".": { "types": "./lib/types/host/index.d.ts", "default": "./lib/host.js" },
     "./android": { "types": "./lib/types/host/android.d.ts", "default": "./lib/android.js" },
@@ -120,14 +120,14 @@
     "zod": "4.4.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "4.1.0",
-    "@deepseek-ai/dsh-agent": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-brand": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-home-paths": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-subprocess": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.1"
+    "@deepseek-ai/cordis": "4.0.6-alpha.2 || 4.1.0",
+    "@deepseek-ai/dsh-agent": "0.2.2-alpha.3 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-brand": "0.2.2-alpha.3 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-home-paths": "0.2.2-alpha.3 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm": "0.2.2-alpha.3 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-subprocess": "0.2.2-alpha.3 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.2-alpha.3 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.2-alpha.3 || 0.2.2-rc.1"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-agent-default-model": "0.2.2-rc.1",

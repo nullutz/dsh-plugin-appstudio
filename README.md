@@ -8,25 +8,31 @@ The first release targets Android development on Windows with Flutter, React Nat
 
 App Studio is a community plugin maintained by `nullutz`. [GitHub repository](https://github.com/nullutz/dsh-plugin-appstudio)
 
+## Compatibility
+
+- **DSH host.** App Studio `0.1.12` supports DSH Desktop with DeepSeek Harness `0.2.2-alpha.3` or `0.2.2-rc.1`. Check the bundled Harness version when using a desktop distribution with its own version numbering.
+- **Android runtime.** Requires Windows x64, hardware virtualization, and WSL2 with KVM (`/dev/kvm`) available to the emulator. Windows 11 is the standard setup for WSL2 nested virtualization. If Windows runs in a VM, its hypervisor must also expose nested virtualization. [Microsoft WSL settings](https://learn.microsoft.com/en-us/windows/wsl/wsl-config#main-wsl-settings)
+- **Tested configuration.** The validation baseline records the Windows build, WSL, Electron, and Android versions used for testing. The requirements above describe the capabilities needed on other machines. [Validation baseline](runtime-lock.json)
+
 ## Install and set up
 
-Use DSH Desktop 0.2.2-rc.1 on Windows x64 with WSL2 and CPU virtualization. If Windows runs inside a virtual machine, enable nested virtualization. Initial setup downloads the Ubuntu base, Linux dependencies and Android SDK. Framework tools are downloaded when first needed.
+Open DSH Desktop once to initialize its profile, then fully quit it. Run the command below in PowerShell using the bundled `dsh.cmd` under `resources/runtime/cli/bin`. [DSH Desktop CLI documentation](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.1/apps/desktop/README.md#bundled-command-runtime)
 
 ```powershell
-dsh plugin --profile desktop add dsh-plugin-appstudio@0.1.11 --ignore-scripts
+dsh plugin --profile desktop add dsh-plugin-appstudio@0.1.12 --ignore-scripts
 ```
 
-For a file-based install, download `dsh-plugin-appstudio-0.1.11.tgz` and run the following command from its directory. [GitHub Releases](https://github.com/nullutz/dsh-plugin-appstudio/releases)
+For a file-based install, download `dsh-plugin-appstudio-0.1.12.tgz` and run the following command from its directory. [GitHub Releases](https://github.com/nullutz/dsh-plugin-appstudio/releases)
 
 ```powershell
-dsh plugin --profile desktop add .\dsh-plugin-appstudio-0.1.11.tgz --ignore-scripts
+dsh plugin --profile desktop add .\dsh-plugin-appstudio-0.1.12.tgz --ignore-scripts
 ```
 
-If the profile uses a development link, stop the Android runtime and run `dsh plugin --profile desktop remove dsh-plugin-appstudio` before installing the package. [npm package](https://www.npmjs.com/package/dsh-plugin-appstudio/v/0.1.11)
+If the profile uses a development link, stop the Android runtime and run `dsh plugin --profile desktop remove dsh-plugin-appstudio` before installing the package. [npm package](https://www.npmjs.com/package/dsh-plugin-appstudio/v/0.1.12)
 
 Open or restart DSH Desktop. In Plugin Manager, enable the `dsh-plugin-appstudio` and `dsh-plugin-appstudio/android` components, then open **App Studio** from the sidebar. Review and accept the Android SDK license, set up the runtime once, then select **Start Android Live**. On a cold start, App Studio starts the device that was showing the current app first and starts the other device in the background. Once both devices are ready, you can switch between them. When you switch to another DSH panel or session, App Studio keeps the preview connections open and reuses them when you return. Select **Stop runtime** when you finish testing. The SDK, tools, and emulator data stay available for the next run.
 
-App Studio sizes each emulator for the CPU and memory available in WSL2. It uses hardware rendering when WSL2 exposes working D3D12 graphics and falls back to SwiftShader when needed. If setup or startup fails, open **Technical details** in the Android runtime panel for the error code and diagnostic output. **Repair runtime** can restore SDK or gateway files in an existing environment and reuse its device data.
+Initial setup imports a dedicated WSL2 distribution and downloads its Linux dependencies and Android SDK. Framework tools are downloaded when first needed. App Studio sizes each emulator for the CPU and memory available in WSL2. It uses hardware rendering when WSL2 exposes working D3D12 graphics and falls back to SwiftShader when needed. If setup or startup fails, open **Technical details** in the Android runtime panel for the error code and diagnostic output. **Repair runtime** can restore SDK or gateway files in an existing environment and reuse its device data.
 
 ## Run and rebuild an existing project
 

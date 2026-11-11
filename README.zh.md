@@ -8,25 +8,31 @@ DSH App Studio 是 DeepSeek Harness（DSH）的可视化 App 开发工作台。�
 
 App Studio 由 `nullutz` 维护，是一个 DSH 社区插件。 [GitHub 仓库](https://github.com/nullutz/dsh-plugin-appstudio)
 
+## 适用环境
+
+- **DSH 宿主。** App Studio `0.1.12` 兼容内置 DeepSeek Harness `0.2.2-alpha.3` 或 `0.2.2-rc.1` 的 DSH Desktop。使用有独立版本号的桌面发行版时，请核对它内置的 Harness 版本。
+- **Android 运行环境。** 要求 Windows x64、硬件虚拟化，以及可供模拟器访问 KVM（`/dev/kvm`）的 WSL2。Windows 11 是启用 WSL2 嵌套虚拟化的常规配置。如果 Windows 本身运行在虚拟机里，外层虚拟化平台也要向它开放嵌套虚拟化。 [微软 WSL 设置](https://learn.microsoft.com/zh-cn/windows/wsl/wsl-config#main-wsl-settings)
+- **实测配置。** 实测基线记录测试时的 Windows 构建号、WSL、Electron 和 Android 版本。其他机器按上面的宿主和虚拟化条件判断。 [实测基线](runtime-lock.json)
+
 ## 安装与初始化
 
-使用 DSH Desktop 0.2.2-rc.1。Android 环境要求 Windows x64、WSL2 和 CPU 虚拟化。Windows 运行在虚拟机里时，还需要启用嵌套虚拟化。首次初始化会下载 Ubuntu 基础镜像、Linux 依赖和 Android SDK，各框架的构建工具在首次使用时下载。
+先打开一次 DSH Desktop 初始化桌面配置，再完全退出。在 PowerShell 中使用 DSH 安装目录下 `resources/runtime/cli/bin` 随附的 `dsh.cmd` 执行以下命令。 [DSH Desktop CLI 文档](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.1/apps/desktop/README.md#bundled-command-runtime)
 
 ```powershell
-dsh plugin --profile desktop add dsh-plugin-appstudio@0.1.11 --ignore-scripts
+dsh plugin --profile desktop add dsh-plugin-appstudio@0.1.12 --ignore-scripts
 ```
 
-也可以下载 `dsh-plugin-appstudio-0.1.11.tgz`，在安装包所在目录运行以下命令。 [GitHub Releases](https://github.com/nullutz/dsh-plugin-appstudio/releases)
+也可以下载 `dsh-plugin-appstudio-0.1.12.tgz`，在安装包所在目录运行以下命令。 [GitHub Releases](https://github.com/nullutz/dsh-plugin-appstudio/releases)
 
 ```powershell
-dsh plugin --profile desktop add .\dsh-plugin-appstudio-0.1.11.tgz --ignore-scripts
+dsh plugin --profile desktop add .\dsh-plugin-appstudio-0.1.12.tgz --ignore-scripts
 ```
 
-如果这个配置已通过开发链接安装，先停止 Android 运行环境，再用 `dsh plugin --profile desktop remove dsh-plugin-appstudio` 移除该链接，随后安装发布包。 [npm 包](https://www.npmjs.com/package/dsh-plugin-appstudio/v/0.1.11)
+如果这个配置已通过开发链接安装，先停止 Android 运行环境，再用 `dsh plugin --profile desktop remove dsh-plugin-appstudio` 移除该链接，随后安装发布包。 [npm 包](https://www.npmjs.com/package/dsh-plugin-appstudio/v/0.1.12)
 
 打开或重启 DSH Desktop，在插件管理器中启用 `dsh-plugin-appstudio` 和 `dsh-plugin-appstudio/android` 两个组件，然后从左侧栏打开 **App Studio**。阅读并接受 Android SDK 许可，首次初始化后点击「启动 Android 实时预览」。冷启动时优先启动上次显示当前 App 的设备，另一台在后台启动。两台都就绪后可以手动切换。切到 DSH 其他面板或会话时，App Studio 保持预览连接，回来直接复用。测试结束后可点「停止运行环境」。SDK、工具和模拟器数据供下次复用。
 
-App Studio 会根据 WSL2 可用的 CPU 和内存配置模拟器。D3D12 图形可用时启用硬件渲染，必要时自动回退到 SwiftShader。初始化或启动失败时，可以在「Android 运行环境」展开「技术详情」，查看故障代码和诊断信息。已安装环境的 SDK 或网关文件损坏时，可用「修复运行环境」复用已有设备数据。
+首次初始化会导入专用 WSL2 发行版，下载 Linux 依赖和 Android SDK。各框架的构建工具在首次使用时下载。App Studio 会根据 WSL2 可用的 CPU 和内存配置模拟器。D3D12 图形可用时启用硬件渲染，必要时自动回退到 SwiftShader。初始化或启动失败时，可以在「Android 运行环境」展开「技术详情」，查看故障代码和诊断信息。已安装环境的 SDK 或网关文件损坏时，可用「修复运行环境」复用已有设备数据。
 
 ## 运行和重建已有工程
 

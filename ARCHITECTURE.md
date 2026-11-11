@@ -26,7 +26,7 @@ After generation, the Windows project directory is the source of truth. Agent ed
 
 The project owns comment drafts. App Studio creates dedicated DSH sessions using the project root, so they appear in the session list and use the existing Workspace grouping, pinning, and archiving features. Dedicated sessions receive iteration tasks, with agent writes scoped to the candidate copy. Users can open regular DSH sessions for viewing. A submission keeps the session ID selected at submission time, so switching sessions affects only the next iteration.
 
-The dedicated session belongs to the source Workspace and uses the App Studio preset. A session created for generation can also receive comment iterations. The shared Agent entry grants candidate file tools to the exact submitted DSH turn and masks other tools for that preset. Annotated JPEG frames enter DSH as image attachments. The Host records a batch ID before sending the prompt, tracks its settlement and retains the job and candidate outside the workbench connection. A repair uses the original session and candidate baseline.
+The dedicated session belongs to the source Workspace and uses the App Studio preset. A session created for generation can also receive comment iterations. The shared Agent entry tracks the submitted turn through DSH inbox events. It uses conditional tool registration to expose candidate file tools during that turn and scoped tool restrictions to mask other tools. Annotated JPEG frames enter DSH as image attachments. The Host records a batch ID before sending the prompt, tracks its settlement and retains the job and candidate outside the workbench connection. A repair uses the original session and candidate baseline.
 
 ## Android runtime and transport
 
